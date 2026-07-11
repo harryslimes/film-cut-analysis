@@ -36,9 +36,9 @@
     },
     {
       "name": "His Girl Friday (1940)", "imdb": "tt0032599",
-      "video": "data/movies/his_girl_friday_clean.mp4",
-      "base": {"kind": "none", "path": null},
-      "_status": "no MovieNet reference (not in MovieNet); needs a human canonical via label_prep/label_server"
+      "video": "data/movies/his_girl_friday/his_girl_friday_clean.mp4",
+      "base": {"kind": "detection", "path": "data/movies/his_girl_friday/his_girl_friday_clean.cuts.json"},
+      "_status": "not in MovieNet; canonical = our TransNetV2 detection (threshold 0.4, gradual 0.35, strobe guard). No external reference to verify against."
     }
   ]
 }

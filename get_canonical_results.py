@@ -64,8 +64,9 @@ def main():
     os.makedirs(os.path.dirname(a.out), exist_ok=True)
     json.dump(results, open(a.out, "w"), indent=1)
     print(f"\nwrote {a.out}")
-    print("source key: 'movienet' = machine reference (not gold), "
-          "'movienet+human' = MovieNet with hand-verified region(s), 'none' = unlabelled")
+    print("source key: 'movienet' = MovieNet machine reference (not gold), "
+          "'movienet+human' = MovieNet with hand-verified region(s), "
+          "'detection' = our TransNetV2 output (no external reference), 'none' = unlabelled")
     if a.json:
         for imdb, r in results.items():
             if r.get("cuts"):
