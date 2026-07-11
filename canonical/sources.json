@@ -1,0 +1,44 @@
+{
+  "_note": "Declares what is CANONICAL per movie. 'base' = whole-film reference cut list (MovieNet, synced to our copy). 'overrides' replace cuts inside a region with a human-verified canonical. Edit this as more human canonicals are produced.",
+  "movies": [
+    {
+      "name": "Vertigo (1958)", "imdb": "tt0052357",
+      "video": "data/movies/Vertigo.1958.1080p.CRIT.WEB-DL.AAC2.0.H.264-DonK/Vertigo (1958) (1080p CRIT WEB-DL H264 SDR AAC 2.0 English - DonK).mkv",
+      "base": {"kind": "movienet", "path": "data/movies/Vertigo.1958.1080p.CRIT.WEB-DL.AAC2.0.H.264-DonK/Vertigo (1958) (1080p CRIT WEB-DL H264 SDR AAC 2.0 English - DonK).gt.json"},
+      "overrides": [
+        {"kind": "human", "path": "groundtruth/vertigo_nightmare.canonical.json", "region": [5030.0, 5115.0]}
+      ]
+    },
+    {
+      "name": "Charade (1963)", "imdb": "tt0056923",
+      "video": "data/movies/charade_1963/charade_1963.mp4",
+      "base": {"kind": "movienet", "path": "data/movies/charade_1963/charade_1963.gt.json"}
+    },
+    {
+      "name": "It's A Wonderful Life (1946)", "imdb": "tt0038650",
+      "video": "data/movies/It's.A.Wonderful.Life.1946.BRRip.720p.AC3.x264.Temporal/It's A Wonderful Life 1946 BRRip 720p AC3 x264 Temporal.mkv",
+      "base": {"kind": "movienet", "path": "data/movies/It's.A.Wonderful.Life.1946.BRRip.720p.AC3.x264.Temporal/It's A Wonderful Life 1946 BRRip 720p AC3 x264 Temporal.gt.json"}
+    },
+    {
+      "name": "Rear Window (1954)", "imdb": "tt0047396",
+      "video": "data/movies/Rear.Window.1954.DVDRip.x264-HANDJOB/Rear.Window.1954.DVDRip.x264-HANDJOB.mkv",
+      "base": {"kind": "movienet", "path": "data/movies/Rear.Window.1954.DVDRip.x264-HANDJOB/Rear.Window.1954.DVDRip.x264-HANDJOB.gt.json"}
+    },
+    {
+      "name": "The Wizard of Oz (1939)", "imdb": "tt0032138",
+      "video": "data/movies/The.Wizard.of.Oz.1939.1080p.HMAX.WEB-DL.DDP2.0.H.264.DUAL-Potatin/The.Wizard.of.Oz.1939.1080p.HMAX.WEB-DL.DDP2.0.H.264.DUAL-Potatin.mkv",
+      "base": {"kind": "movienet", "path": "data/movies/The.Wizard.of.Oz.1939.1080p.HMAX.WEB-DL.DDP2.0.H.264.DUAL-Potatin/The.Wizard.of.Oz.1939.1080p.HMAX.WEB-DL.DDP2.0.H.264.DUAL-Potatin.gt.json"}
+    },
+    {
+      "name": "North by Northwest (1959)", "imdb": "tt0053125",
+      "video": "data/movies/North.By.Northwest.1959.720p.TUBI.WEB-DL.AAC2.0.H.264-PiRaTeS/North.By.Northwest.1959.720p.TUBI.WEB-DL.AAC.2.0.H.264-PiRaTeS.mkv",
+      "base": {"kind": "movienet", "path": "data/movies/North.By.Northwest.1959.720p.TUBI.WEB-DL.AAC2.0.H.264-PiRaTeS/North.By.Northwest.1959.720p.TUBI.WEB-DL.AAC.2.0.H.264-PiRaTeS.gt.json"}
+    },
+    {
+      "name": "His Girl Friday (1940)", "imdb": "tt0032599",
+      "video": "data/movies/his_girl_friday_clean.mp4",
+      "base": {"kind": "none", "path": null},
+      "_status": "no MovieNet reference (not in MovieNet); needs a human canonical via label_prep/label_server"
+    }
+  ]
+}

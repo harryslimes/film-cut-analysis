@@ -52,10 +52,7 @@ def main():
     tn = np.frombuffer(subprocess.run(["ffmpeg","-hide_banner","-loglevel","error","-ss",str(a0),
         "-t",str(a.end-a0+1),"-i",a.video,"-vf","scale=48:27,format=rgb24","-f","rawvideo","-"],
         stdout=subprocess.PIPE,stderr=subprocess.PIPE).stdout, np.uint8).reshape([-1,27,48,3])
-    th = int(round(a.tw*H/W/2)*2)
-    disp = np.frombuffer(subprocess.run(["ffmpeg","-hide_banner","-loglevel","error","-ss",str(a0),
-        "-t",str(a.end-a0+1),"-i",a.video,"-vf",f"scale={a.tw}:{th},format=bgr24","-f","rawvideo","-"],
-        stdout=subprocess.PIPE,stderr=subprocess.PIPE).stdout, np.uint8).reshape([-1,th,a.tw,3])
+    th = int(round(a.tw*H/W/2)*2)   # display thumbs decoded streaming later (full-film safe)
 
     model = _model()
     with torch.no_grad():
@@ -70,15 +67,32 @@ def main():
     d = int(round(a.delta * fps)); nlocal = len(tn)
 
     cands = []
+    need = {}   # local frame index -> list of thumbnail paths to save at that frame
     for cid, f in enumerate(sorted(frames)):
         t = round(a0 + f / fps, 3)
         ib, ia = max(0, f-d), min(nlocal-1, f+d)
-        cv2.imwrite(f"{outdir}/thumbs/{cid}_b.jpg", disp[ib])
-        cv2.imwrite(f"{outdir}/thumbs/{cid}_a.jpg", disp[ia])
+        need.setdefault(ib, []).append(f"{outdir}/thumbs/{cid}_b.jpg")
+        need.setdefault(ia, []).append(f"{outdir}/thumbs/{cid}_a.jpg")
         cands.append({"id": cid, "frame": int(f), "time": t,
                       "prob": round(float(frames[f]), 3),
                       "sharp": round(float(single[f]), 3), "gradual": round(float(allf[f]), 3),
                       "kept": False})
+    # stream-decode display-res frames and save only the thumbnails we need (O(1) memory)
+    fsz = a.tw * th * 3
+    proc = subprocess.Popen(["ffmpeg","-hide_banner","-loglevel","error","-ss",str(a0),
+        "-t",str(a.end-a0+1),"-i",a.video,"-vf",f"scale={a.tw}:{th},format=bgr24",
+        "-f","rawvideo","-"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=fsz*4)
+    idx = 0
+    while True:
+        buf = proc.stdout.read(fsz)
+        if len(buf) < fsz:
+            break
+        if idx in need:
+            img = np.frombuffer(buf, np.uint8).reshape(th, a.tw, 3)
+            for path in need[idx]:
+                cv2.imwrite(path, img)
+        idx += 1
+    proc.wait()
     # mark ONE nearest candidate per current kept cut (avoids near-duplicate keeps)
     for kt in kept_times:
         near = min(cands, key=lambda c: abs(c["time"] - kt))
