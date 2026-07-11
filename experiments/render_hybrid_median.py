@@ -1,0 +1,50 @@
+"""Winning recipe: CLAHE intensity-SSIM on a TEMPORAL-MEDIAN window (kills transient
+flashes) -> drop flashes; then density-collapse the survivors -> mop up leaky bursts.
+green=keep, red=ssim-flash-drop, orange=density-burst-drop."""
+import json, subprocess, argparse
+import numpy as np, cv2
+from postfilter import dampen_strobe
+
+def ssim(a,b):
+    a=a.astype(np.float32);b=b.astype(np.float32)
+    ma=cv2.GaussianBlur(a,(7,7),1.5);mb=cv2.GaussianBlur(b,(7,7),1.5)
+    va=cv2.GaussianBlur(a*a,(7,7),1.5)-ma**2;vb=cv2.GaussianBlur(b*b,(7,7),1.5)-mb**2
+    vab=cv2.GaussianBlur(a*b,(7,7),1.5)-ma*mb;c1,c2=(2.55)**2,(7.65)**2
+    return float((((2*ma*mb+c1)*(2*vab+c2))/((ma**2+mb**2+c1)*(va+vb+c2))).mean())
+
+ap=argparse.ArgumentParser()
+ap.add_argument("--video",required=True); ap.add_argument("--cuts",required=True)
+ap.add_argument("--start",type=float,required=True); ap.add_argument("--end",type=float,required=True)
+ap.add_argument("--fps",type=float,default=23.976); ap.add_argument("--delta",type=float,default=0.2)
+ap.add_argument("--win",type=int,default=4); ap.add_argument("--thresh",type=float,default=0.62)
+ap.add_argument("--keepgap",type=float,default=3.0); ap.add_argument("--out",required=True)
+ap.add_argument("--tw",type=int,default=160); ap.add_argument("--cols",type=int,default=4)
+a=ap.parse_args(); a0=a.start-1.0
+def dec(sc): return subprocess.run(["ffmpeg","-hide_banner","-loglevel","error","-ss",str(a0),"-t",
+    str(a.end-a0+1),"-i",a.video,"-vf",sc,"-f","rawvideo","-"],stdout=subprocess.PIPE,stderr=subprocess.PIPE).stdout
+gray=np.frombuffer(dec("scale=256:144,format=gray"),np.uint8).reshape([-1,144,256])
+pr=subprocess.check_output(["ffprobe","-v","error","-select_streams","v:0","-show_entries","stream=width,height",
+    "-of","csv=p=0",a.video]).decode().strip().split(","); W,H=int(pr[0]),int(pr[1]); th=int(round(a.tw*H/W/2)*2)
+col=np.frombuffer(dec(f"scale={a.tw}:{th},format=bgr24"),np.uint8).reshape([-1,th,a.tw,3])
+clahe=cv2.createCLAHE(2.0,(8,8)); grayc=np.stack([clahe.apply(f) for f in gray]).astype(np.float32)
+n=len(grayc); d=int(round(a.delta*a.fps)); Wn=a.win
+def med(i0,i1): i0=max(0,i0);i1=min(n,max(i1,i0+1));return np.median(grayc[i0:i1],axis=0)
+cuts=[c for c in json.load(open(a.cuts))["cuts"] if a.start<=c<=a.end]
+S={}; ssim_keep=[]
+for c in cuts:
+    ig=int(round((c-a0)*a.fps)); s=ssim(med(ig-d-Wn,ig-d), med(ig+d,ig+d+Wn)); S[c]=s
+    if s<a.thresh: ssim_keep.append(c)
+final=set(dampen_strobe(ssim_keep, dens_window=8, dens_max=4, merge_gap=4, keep_gap=a.keepgap))
+pad,lab=8,20; pair_w=a.tw*2+pad; cw=pair_w+pad*2; ch=th+lab+pad*2
+cols=a.cols; rows=(len(cuts)+cols-1)//cols; sheet=np.full((rows*ch+pad,cols*cw+pad,3),30,np.uint8); nk=nf=nb=0
+for k,c in enumerate(cuts):
+    ig=int(round((c-a0)*a.fps))
+    if c in final: color=(0,220,0); tag="KEEP"; nk+=1
+    elif S[c]>=a.thresh: color=(0,0,230); tag="flash"; nf+=1
+    else: color=(0,150,255); tag="burst"; nb+=1
+    r,cc=divmod(k,cols); y=pad+r*ch+lab; x=pad+cc*cw
+    sheet[y:y+th,x:x+a.tw]=col[max(0,ig-d)]; sheet[y:y+th,x+a.tw+pad:x+2*a.tw+pad]=col[min(len(col)-1,ig+d)]
+    cv2.rectangle(sheet,(x-2,y-2),(x+pair_w+2,y+th+2),color,2)
+    cv2.putText(sheet,f"#{k+1} {c:.1f} s{S[c]:.2f} {tag}",(x,pad+r*ch+14),cv2.FONT_HERSHEY_SIMPLEX,0.4,color,1,cv2.LINE_AA)
+cv2.imwrite(a.out,sheet)
+print(f"{len(cuts)} cuts -> KEEP {nk}, flash-drop {nf}, burst-drop {nb} (median win={Wn}, thr={a.thresh}) -> {a.out}")

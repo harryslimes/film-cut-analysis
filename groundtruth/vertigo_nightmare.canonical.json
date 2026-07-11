@@ -1,0 +1,23 @@
+{
+  "movie": "Vertigo (1958)",
+  "imdb": "tt0052357",
+  "sequence": "nightmare",
+  "region": [
+    5030.0,
+    5115.0
+  ],
+  "fps": 23.976023976023978,
+  "cuts": [
+    5040.72,
+    5062.533,
+    5072.835,
+    5078.258,
+    5085.139,
+    5098.027,
+    5105.243,
+    5111.291,
+    5113.334
+  ],
+  "source": "manual, human-verified via label_server tool",
+  "note": "Canonical ground truth. Automation ceiling here is ~F1 0.55 (real cuts and colour-flashes are indistinguishable on all frame-level signals). Use this region as the reference for any detector (incl. motion-vector) on this sequence."
+}
