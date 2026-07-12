@@ -33,6 +33,20 @@ def build_minimal_events(times):
     return [by_time[t] for t in sorted(by_time)]
 
 
+def ffmpeg_decode_extra(returncode, stderr):
+    """ffmpeg-scene decode diagnostics from its exit code + stderr (S3-F2 gap 2):
+    {} on a clean exit; otherwise decode_ok False with a detail that carries the stderr
+    tail when NO usable showinfo output survived (an unusable decode -> empty events ->
+    the exporter reports status 'failed'; a nonzero exit that still emitted showinfo ->
+    'partial'). Dependency-light so the branch is executed by tests, not just reviewed."""
+    if returncode == 0:
+        return {}
+    detail = f"ffmpeg-scene exited {returncode}"
+    if "showinfo" not in stderr:
+        detail += f"; unusable decode:\n{stderr[-1500:]}"
+    return {"decode_ok": False, "decode_detail": detail}
+
+
 def build_torch_events(accepts, fps):
     """torch: accepts = [(i, spike), ...] in emission order (ascending i), where i is
     the score-array index of the accepted transition and spike is the native

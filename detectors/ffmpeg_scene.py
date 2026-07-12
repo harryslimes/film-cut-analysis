@@ -16,7 +16,7 @@ import re
 import subprocess
 
 from .base import DetectResult, Timer, ffprobe_info
-from detector_events import build_minimal_events
+from detector_events import build_minimal_events, ffmpeg_decode_extra
 
 _SHOWINFO = re.compile(r"pts_time:([0-9.]+)")
 
@@ -36,19 +36,17 @@ def detect(video_path, threshold=0.4, analyse_h=180, method="cpu") -> DetectResu
     cmd = ["ffmpeg", "-hide_banner", "-nostats", *pre, "-i", video_path,
            "-vf", vf, "-an", "-f", "null", "-"]
 
+    # ffmpeg binary absent raises FileNotFoundError from subprocess.run itself -- the only
+    # "genuinely unrunnable" case we still let propagate (S3-F2 gap 2).
     with Timer() as t:
         proc = subprocess.run(cmd, stderr=subprocess.PIPE, stdout=subprocess.DEVNULL)
     stderr = proc.stderr.decode(errors="replace")
-    if proc.returncode != 0 and "showinfo" not in stderr:
-        raise RuntimeError(f"ffmpeg failed:\n{stderr[-1500:]}")
 
     cuts = sorted(float(m) for m in _SHOWINFO.findall(stderr))
-    # A3.4: this detector owns the decode subprocess. A truly broken run raised above; a
-    # nonzero exit that still produced showinfo output is a PARTIAL decode -- record it.
-    extra = {}
-    if proc.returncode != 0:
-        extra["decode_ok"] = False
-        extra["decode_detail"] = f"ffmpeg-scene exited {proc.returncode} during decode"
+    # A3.4 / gap 2: this detector owns the decode subprocess, so report a nonzero exit
+    # rather than raise -- the exporter emits status "partial" (some showinfo survived) or
+    # "failed" (none, so events is empty), instead of the tool crashing on a bad decode.
+    extra = ffmpeg_decode_extra(proc.returncode, stderr)
     return DetectResult(
         name=f"ffmpeg-scene[{method}]", events=build_minimal_events(cuts), elapsed=t.elapsed,
         n_frames=n_frames, fps_source=fps,

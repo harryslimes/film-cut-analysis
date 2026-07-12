@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from cut_events import event_to_dict, validate_events  # noqa: E402
 from detector_events import (  # noqa: E402
     build_minimal_events, build_mv_events, build_torch_events,
-    build_transnet_events, gradual_span_frames,
+    build_transnet_events, ffmpeg_decode_extra, gradual_span_frames,
 )
 
 
@@ -109,6 +109,24 @@ class TestTransnet(unittest.TestCase):
         self.assertGreater(n_strobe, 0)
         self.assertLess(len(evs), len(hard))
         validate_events(evs)
+
+
+class TestFfmpegDecodeExtra(unittest.TestCase):
+    """S3-F2 gap 2: ffmpeg-scene reports a failed/partial decode instead of raising."""
+    def test_clean_exit_no_diagnostics(self):
+        self.assertEqual(ffmpeg_decode_extra(0, "showinfo pts_time:1.0"), {})
+
+    def test_partial_nonzero_with_showinfo(self):
+        e = ffmpeg_decode_extra(1, "some showinfo pts_time:1.0 output\n")
+        self.assertFalse(e["decode_ok"])
+        self.assertIn("exited 1", e["decode_detail"])
+        self.assertNotIn("unusable", e["decode_detail"])   # showinfo survived -> partial
+
+    def test_failed_nonzero_no_showinfo(self):
+        e = ffmpeg_decode_extra(69, "Invalid data found when processing input\n")
+        self.assertFalse(e["decode_ok"])
+        self.assertIn("unusable", e["decode_detail"])       # no showinfo -> failed path
+        self.assertIn("Invalid data", e["decode_detail"])   # stderr tail carried in detail
 
 
 if __name__ == "__main__":

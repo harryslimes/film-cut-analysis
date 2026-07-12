@@ -216,6 +216,37 @@ class TestDecodeStatus(unittest.TestCase):
         self.assertEqual(doc["analysis"]["status"], "failed")
 
 
+class TestProbeDurationOrder(unittest.TestCase):
+    """S3-F2 gap 2: _probe_duration tries container format, then longest video stream,
+    then (caller) the n_frames/fps estimate. Mock ffprobe stdout to pin the order."""
+    def setUp(self):
+        self._orig = cut_times._ffprobe_stdout
+
+    def tearDown(self):
+        cut_times._ffprobe_stdout = self._orig
+
+    def _patch(self, format_out, stream_out):
+        def fake(video_path, entries_args):
+            return format_out if "format=duration" in entries_args else stream_out
+        cut_times._ffprobe_stdout = fake
+
+    def test_container_first(self):
+        self._patch("123.5\n", "999.0\n")
+        self.assertEqual(cut_times._probe_duration("v"), (123.5, "container"))
+
+    def test_stream_fallback_when_format_absent(self):
+        self._patch("", "45.0\n12.0\n")                 # container empty -> longest stream
+        self.assertEqual(cut_times._probe_duration("v"), (45.0, "stream"))
+
+    def test_none_when_both_absent(self):
+        self._patch("", "")
+        self.assertEqual(cut_times._probe_duration("v"), (None, None))
+
+    def test_nonpositive_container_falls_through_to_stream(self):
+        self._patch("0\n", "30.0\n")
+        self.assertEqual(cut_times._probe_duration("v"), (30.0, "stream"))
+
+
 class TestNonJsonWritersUnchanged(unittest.TestCase):
     """CSV / EDL / SRT writers untouched -- exercise them (stdlib-only, no detector)."""
     def _tmp(self):

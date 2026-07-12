@@ -114,18 +114,38 @@ def _valid_fps(fps):
             and math.isfinite(fps) and fps > 0)
 
 
-def _probe_duration(video_path):
-    """Container/stream duration (seconds) from ffprobe, or None if unavailable
-    (ffprobe missing, not a media file, or no duration tag)."""
+def _ffprobe_stdout(video_path, entries_args):
+    """ffprobe stdout for the given -show_entries args, or None if ffprobe fails."""
     try:
-        out = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+        return subprocess.run(
+            ["ffprobe", "-v", "error", *entries_args,
              "-of", "default=nokey=1:noprint_wrappers=1", video_path],
-            capture_output=True, text=True, check=True).stdout.strip()
-        d = float(out)
-        return d if math.isfinite(d) and d > 0 else None
-    except (OSError, subprocess.CalledProcessError, ValueError):
+            capture_output=True, text=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
         return None
+
+
+def _parse_pos_float(s):
+    try:
+        v = float(s)
+    except (TypeError, ValueError):
+        return None
+    return v if math.isfinite(v) and v > 0 else None
+
+
+def _probe_duration(video_path):
+    """(duration_seconds, method) from ffprobe, or (None, None). Tries the container
+    `format=duration` first, then the longest video-`stream=duration` (S3-F2 gap 2);
+    `method` is "container" or "stream" so the caller can name the fallback used."""
+    fmt = _ffprobe_stdout(video_path, ["-show_entries", "format=duration"])
+    d = _parse_pos_float((fmt or "").strip())
+    if d is not None:
+        return d, "container"
+    streams = _ffprobe_stdout(video_path, ["-select_streams", "v", "-show_entries", "stream=duration"])
+    vals = [v for v in (_parse_pos_float(x) for x in (streams or "").splitlines()) if v is not None]
+    if vals:
+        return max(vals), "stream"
+    return None, None
 
 
 def build_v2_document(video_path, detector_key, res, repo_dir=None):
@@ -144,7 +164,7 @@ def build_v2_document(video_path, detector_key, res, repo_dir=None):
 
     # A3.4: duration from ffprobe container/stream timing where available; else estimate
     # from n_frames/fps and say so in a warning.
-    probed = _probe_duration(video_path)
+    probed, probe_method = _probe_duration(video_path)
     duration_estimated = False
     if probed is not None:
         duration = probed
@@ -178,9 +198,12 @@ def build_v2_document(video_path, detector_key, res, repo_dir=None):
         warnings.append(res.extra.get("decode_detail", "decoder exited nonzero"))
     if res.extra.get("warning"):           # e.g. motion-vectors' fixed-GOP diagnostic
         warnings.append(res.extra["warning"])
+    if have_duration and probe_method == "stream":
+        warnings.append("source duration from ffprobe stream timing "
+                        "(container duration unavailable)")
     if have_duration and duration_estimated:
         warnings.append("source duration estimated from n_frames/fps "
-                        "(ffprobe container timing unavailable)")
+                        "(ffprobe container/stream timing unavailable)")
     if not have_duration:
         warnings.append("source duration unavailable; coverage omitted "
                         "(time-in-coverage check relaxes to time >= 0)")
