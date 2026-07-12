@@ -46,6 +46,9 @@ the detector actually knows (frame, `transition_kind`, native-scale `confidence`
 `cuts` array is kept as a generated projection (`cuts == [e.time for e in cut_events]`),
 so old readers that only want `cuts`/`fps`/`video` still work unchanged.
 
+Abbreviated example (a real document also carries `source.mtime_utc`, the rest of the
+`run` provenance, and an `analysis` block with `status`/`coverage`/`event_count`):
+
 ```json
 {
   "format": "film-cut-analysis/cut-events",

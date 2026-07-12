@@ -13,11 +13,12 @@ import argparse
 import csv
 import datetime
 import json
+import math
 import os
 import subprocess
 import sys
 
-from cut_export import build_document
+from cut_export import build_document, ExportValidationError
 
 
 def hhmmssff(seconds, fps):
@@ -69,19 +70,20 @@ def write_edl(path, cuts, fps, duration):
 
 # registry key -> (detector_id, backend). Explicit and auditable rather than parsed from
 # the display name (design §3.1: id/backend are stable identifiers; the legacy display
-# string is never parsed). backend = the decode path the key selects; psd/motion-vectors
-# offer no such choice, so backend is absent (None -> omitted). Unknown keys fall back to
-# the raw key with no backend.
+# string is never parsed). backend = the decode path the run actually used. psd and
+# motion-vectors decode on the CPU (no NVDEC path), so backend is truthfully "cpu"
+# (amendment A3.6 -- never omitted for a known CPU path). Unknown keys fall back to the
+# raw key with no backend.
 _DETECTOR_IDS = {
     "ffmpeg-cpu":     ("ffmpeg-scene", "cpu"),
     "ffmpeg-cuda":    ("ffmpeg-scene", "cuda"),
-    "psd-content":    ("psd-content", None),
-    "psd-adaptive":   ("psd-adaptive", None),
+    "psd-content":    ("psd-content", "cpu"),
+    "psd-adaptive":   ("psd-adaptive", "cpu"),
     "torch-cpu":      ("torch-gpu", "cpu"),
     "torch-cuda":     ("torch-gpu", "cuda"),
     "transnet-cpu":   ("transnetv2", "cpu"),
     "transnet-cuda":  ("transnetv2", "cuda"),
-    "motion-vectors": ("motion-vectors", None),
+    "motion-vectors": ("motion-vectors", "cpu"),
 }
 
 
@@ -107,17 +109,51 @@ def _git_provenance(repo_dir):
         return None, None
 
 
+def _valid_fps(fps):
+    return (isinstance(fps, (int, float)) and not isinstance(fps, bool)
+            and math.isfinite(fps) and fps > 0)
+
+
+def _probe_duration(video_path):
+    """Container/stream duration (seconds) from ffprobe, or None if unavailable
+    (ffprobe missing, not a media file, or no duration tag)."""
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=nokey=1:noprint_wrappers=1", video_path],
+            capture_output=True, text=True, check=True).stdout.strip()
+        d = float(out)
+        return d if math.isfinite(d) and d > 0 else None
+    except (OSError, subprocess.CalledProcessError, ValueError):
+        return None
+
+
 def build_v2_document(video_path, detector_key, res, repo_dir=None):
     """Assemble the design-§3 v2 document for a completed detector run and return it
-    (validated by the S3-E1 serializer). Kept separate from main() so it is importable
-    and testable without a video. `res` is a DetectResult (reads .events / .fps_source /
-    .n_frames / .name / .extra)."""
+    (validated on the way out). Separate from main() so it is importable and testable
+    without a video. Reads res.events / .fps_source / .n_frames / .name / .settings /
+    .extra."""
     if repo_dir is None:
         repo_dir = os.path.dirname(os.path.abspath(__file__))
+
+    fps = res.fps_source
+    if not _valid_fps(fps):                # A3.4: non-positive/non-finite fps never exported
+        raise ExportValidationError(f"fps must be positive and finite for export (got {fps!r})")
+
     st = os.stat(video_path)
 
-    duration = res.n_frames / res.fps_source if res.fps_source else 0.0
-    have_duration = duration > 0
+    # A3.4: duration from ffprobe container/stream timing where available; else estimate
+    # from n_frames/fps and say so in a warning.
+    probed = _probe_duration(video_path)
+    duration_estimated = False
+    if probed is not None:
+        duration = probed
+    elif res.n_frames:
+        duration = res.n_frames / fps
+        duration_estimated = True
+    else:
+        duration = 0.0
+    have_duration = math.isfinite(duration) and duration > 0
 
     source = {"path": video_path, "size_bytes": st.st_size,
               "mtime_utc": _iso_utc(st.st_mtime),
@@ -128,22 +164,33 @@ def build_v2_document(video_path, detector_key, res, repo_dir=None):
     run = {"detector_id": detector_id, "backend": backend,
            "tool_commit": commit, "tool_dirty": dirty,
            "model": "transnetv2-pytorch (weights as installed)" if detector_id == "transnetv2" else None,
-           "settings": dict(res.extra),   # the detector's self-reported resolved params (see report)
+           "settings": dict(getattr(res, "settings", None) or {}),   # A3.1: resolved config, NOT diagnostics
            "generated_by": "cut_times.py", "generated_utc": _iso_utc()}
 
+    # A3.4 honest status: detectors that own their decode subprocess (torch, ffmpeg-scene)
+    # report decode_ok in extra. Nonzero exit -> "partial" if we still have events, else
+    # "failed", with a recorded warning.
     warnings = []
-    if res.extra.get("warning"):           # e.g. motion-vectors' fixed-GOP warning
+    if res.extra.get("decode_ok", True):
+        status = "complete"
+    else:
+        status = "partial" if res.events else "failed"
+        warnings.append(res.extra.get("decode_detail", "decoder exited nonzero"))
+    if res.extra.get("warning"):           # e.g. motion-vectors' fixed-GOP diagnostic
         warnings.append(res.extra["warning"])
+    if have_duration and duration_estimated:
+        warnings.append("source duration estimated from n_frames/fps "
+                        "(ffprobe container timing unavailable)")
     if not have_duration:
         warnings.append("source duration unavailable; coverage omitted "
                         "(time-in-coverage check relaxes to time >= 0)")
 
-    analysis = {"status": "complete",
+    analysis = {"status": status,
                 "coverage": [{"start": 0.0, "end": round(duration, 3)}] if have_duration else [],
                 "warnings": warnings}
 
     return build_document(res.events, source=source, run=run, analysis=analysis,
-                          fps=res.fps_source, video=video_path, detector=res.name)
+                          fps=fps, video=video_path, detector=res.name)
 
 
 def main():
@@ -167,6 +214,8 @@ def main():
         raise SystemExit(f"unknown detector '{args.detector}'. try --list")
 
     res = REGISTRY[args.detector](args.video)
+    if not _valid_fps(res.fps_source):      # A3.4: never write any format with invalid fps
+        raise SystemExit(f"error: detector returned invalid fps ({res.fps_source!r}); refusing to write output")
     stem = args.video.rsplit(".", 1)[0]
     duration = res.n_frames / res.fps_source
 

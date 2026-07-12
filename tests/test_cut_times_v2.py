@@ -20,10 +20,11 @@ from cut_export import validate_document, ExportValidationError  # noqa: E402
 NO_GIT = os.path.join(tempfile.gettempdir(), "cineshelf_s3e6_no_such_repo_dir")
 
 
-def _res(events, *, name="transnetv2[cuda]", fps=25.0, n_frames=250, extra=None):
-    """Stub DetectResult: build_v2_document reads only these attributes."""
+def _res(events, *, name="transnetv2[cuda]", fps=25.0, n_frames=250, settings=None, extra=None):
+    """Stub DetectResult: build_v2_document reads events/fps_source/n_frames/name/
+    settings/extra."""
     return types.SimpleNamespace(events=events, fps_source=fps, n_frames=n_frames,
-                                 name=name, extra=extra or {})
+                                 name=name, settings=settings or {}, extra=extra or {})
 
 
 def _events():
@@ -47,7 +48,7 @@ class _TmpVideo:
 class TestBuildV2Document(unittest.TestCase):
     def _doc(self, detector_key="transnet-cuda", res=None):
         with _TmpVideo() as vid:
-            r = res or _res(_events(), extra={"threshold": 0.4, "gradual_height": 0.35})
+            r = res or _res(_events(), settings={"threshold": 0.4, "gradual_height": 0.35})
             return cut_times.build_v2_document(vid, detector_key, r, repo_dir=NO_GIT), vid
 
     def test_discriminators_and_legacy_keys(self):
@@ -71,7 +72,7 @@ class TestBuildV2Document(unittest.TestCase):
         self.assertEqual(run["detector_id"], "transnetv2")
         self.assertEqual(run["backend"], "cuda")
         self.assertEqual(run["model"], "transnetv2-pytorch (weights as installed)")
-        self.assertEqual(run["settings"], {"threshold": 0.4, "gradual_height": 0.35})
+        self.assertEqual(run["settings"], {"threshold": 0.4, "gradual_height": 0.35})  # A3.1: from res.settings
         self.assertEqual(run["generated_by"], "cut_times.py")
         self.assertTrue(run["generated_utc"].endswith("Z"))
 
@@ -86,7 +87,9 @@ class TestBuildV2Document(unittest.TestCase):
         self.assertEqual(a["status"], "complete")
         self.assertEqual(a["coverage"], [{"start": 0.0, "end": 10.0}])
         self.assertEqual(a["event_count"], 2)           # derived by the serializer
-        self.assertEqual(a["warnings"], [])
+        # ffprobe can't time the fake temp file -> duration estimated from n_frames/fps,
+        # which A3.4 records as a warning (naming the estimation).
+        self.assertTrue(any("estimated" in w for w in a["warnings"]))
 
     def test_projection_holds_end_to_end(self):
         doc, _ = self._doc()
@@ -107,15 +110,15 @@ class TestMappingTable(unittest.TestCase):
         self.assertEqual(m["transnet-cuda"], ("transnetv2", "cuda"))
         self.assertEqual(m["torch-cpu"], ("torch-gpu", "cpu"))
         self.assertEqual(m["ffmpeg-cuda"], ("ffmpeg-scene", "cuda"))
-        self.assertEqual(m["psd-adaptive"], ("psd-adaptive", None))     # no backend
-        self.assertEqual(m["motion-vectors"], ("motion-vectors", None))
+        self.assertEqual(m["psd-adaptive"], ("psd-adaptive", "cpu"))      # A3.6: truthful cpu
+        self.assertEqual(m["motion-vectors"], ("motion-vectors", "cpu"))  # A3.6: truthful cpu
 
-    def test_psd_backend_omitted_from_run(self):
+    def test_psd_backend_is_cpu(self):
         with _TmpVideo() as vid:
             doc = cut_times.build_v2_document(vid, "psd-adaptive",
                                               _res(_events(), name="psd-adaptive"), repo_dir=NO_GIT)
         self.assertEqual(doc["run"]["detector_id"], "psd-adaptive")
-        self.assertNotIn("backend", doc["run"])         # None -> omitted, not null
+        self.assertEqual(doc["run"]["backend"], "cpu")  # A3.6: recorded, never omitted
         self.assertNotIn("model", doc["run"])           # non-transnet -> no model
 
     def test_unknown_key_falls_back_to_raw(self):
@@ -145,7 +148,7 @@ class TestDurationAndWarnings(unittest.TestCase):
                      name="motion-vectors", extra=extra),
                 repo_dir=NO_GIT)
         self.assertIn(extra["warning"], doc["analysis"]["warnings"])
-        self.assertNotIn("backend", doc["run"])
+        self.assertEqual(doc["run"]["backend"], "cpu")   # A3.6
 
 
 class TestGitProvenanceHelper(unittest.TestCase):
@@ -163,7 +166,7 @@ class TestGitProvenanceHelper(unittest.TestCase):
             self.assertIsInstance(dirty, bool)
 
 
-class TestLegacyReaderAndCache(unittest.TestCase):
+class TestLegacyReader(unittest.TestCase):
     def test_v2_doc_readable_by_a_legacy_reader(self):
         # a legacy consumer wants only video / fps / cuts -- all still present at top level
         with _TmpVideo() as vid:
@@ -172,13 +175,45 @@ class TestLegacyReaderAndCache(unittest.TestCase):
         self.assertEqual(doc["fps"], 25.0)
         self.assertEqual(doc["cuts"], [1.0, 5.0])
 
-    def test_batch_cache_reader_accepts_tagged_and_legacy(self):
-        # batch_score reads d["cuts"], d.get("fps", 24.0) -- tolerant of the new format tag
-        tagged = {"format": "film-cut-analysis/score-cache", "cuts": [1.0, 2.0], "fps": 24.0}
-        legacy = {"cuts": [1.0, 2.0], "fps": 24.0}
-        v2export = {"format": "film-cut-analysis/cut-events", "cuts": [1.0, 2.0], "fps": 24.0}
-        for d in (tagged, legacy, v2export):
-            self.assertEqual((d["cuts"], d.get("fps", 24.0)), ([1.0, 2.0], 24.0))
+
+class TestFpsGuard(unittest.TestCase):
+    """A3.4: non-positive / non-finite fps is a hard error before export, never faked."""
+    def _build(self, fps):
+        with _TmpVideo() as vid:
+            return cut_times.build_v2_document(vid, "torch-cpu",
+                                               _res(_events(), name="torch-gpu[cpu]", fps=fps),
+                                               repo_dir=NO_GIT)
+
+    def test_zero_fps_rejected(self):
+        self.assertRaises(ExportValidationError, self._build, 0.0)
+
+    def test_negative_fps_rejected(self):
+        self.assertRaises(ExportValidationError, self._build, -5.0)
+
+    def test_nan_fps_rejected(self):
+        self.assertRaises(ExportValidationError, self._build, float("nan"))
+
+
+class TestDecodeStatus(unittest.TestCase):
+    """A3.4: a detector that owns its decode reports decode_ok; export downgrades status."""
+    def test_partial_when_decode_failed_but_events_exist(self):
+        with _TmpVideo() as vid:
+            doc = cut_times.build_v2_document(
+                vid, "torch-cpu",
+                _res(_events(), name="torch-gpu[cpu]",
+                     extra={"decode_ok": False, "decode_detail": "ffmpeg exited 1"}),
+                repo_dir=NO_GIT)
+        self.assertEqual(doc["analysis"]["status"], "partial")
+        self.assertIn("ffmpeg exited 1", doc["analysis"]["warnings"])
+
+    def test_failed_when_decode_failed_and_no_events(self):
+        with _TmpVideo() as vid:
+            doc = cut_times.build_v2_document(
+                vid, "torch-cpu",
+                _res([], name="torch-gpu[cpu]",
+                     extra={"decode_ok": False, "decode_detail": "ffmpeg exited 1"}),
+                repo_dir=NO_GIT)
+        self.assertEqual(doc["analysis"]["status"], "failed")
 
 
 class TestNonJsonWritersUnchanged(unittest.TestCase):

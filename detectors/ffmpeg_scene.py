@@ -43,9 +43,15 @@ def detect(video_path, threshold=0.4, analyse_h=180, method="cpu") -> DetectResu
         raise RuntimeError(f"ffmpeg failed:\n{stderr[-1500:]}")
 
     cuts = sorted(float(m) for m in _SHOWINFO.findall(stderr))
+    # A3.4: this detector owns the decode subprocess. A truly broken run raised above; a
+    # nonzero exit that still produced showinfo output is a PARTIAL decode -- record it.
+    extra = {}
+    if proc.returncode != 0:
+        extra["decode_ok"] = False
+        extra["decode_detail"] = f"ffmpeg-scene exited {proc.returncode} during decode"
     return DetectResult(
         name=f"ffmpeg-scene[{method}]", events=build_minimal_events(cuts), elapsed=t.elapsed,
         n_frames=n_frames, fps_source=fps,
         settings={"method": method, "threshold": threshold, "analyse_h": analyse_h},
-        extra={},
+        extra=extra,
     )

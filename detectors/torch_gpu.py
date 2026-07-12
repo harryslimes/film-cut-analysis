@@ -141,11 +141,17 @@ def detect(video_path, method="cuda", analyse_h=108, batch=256,
                 accepts.append((i, float(s[i] / (local + 1e-6))))
                 last_cut = i
 
+    # A3.4: this detector owns the ffmpeg decode subprocess; report a nonzero exit so the
+    # export can downgrade status to partial/failed rather than claim "complete".
+    extra = {"analyse_res": f"{aw}x{ah}"}
+    if proc.returncode not in (0, None):
+        extra["decode_ok"] = False
+        extra["decode_detail"] = f"torch decode (ffmpeg) exited {proc.returncode}"
     return DetectResult(
         name=f"torch-gpu[{method}]", events=build_torch_events(accepts, fps), elapsed=t.elapsed,
         n_frames=n_frames, fps_source=fps, scores=scores,
         settings={"method": method, "analyse_h": analyse_h, "batch": batch, "wV": wV,
                   "adaptive_ratio": adaptive_ratio, "min_score": min_score,
                   "window": window, "device": device},
-        extra={"analyse_res": f"{aw}x{ah}"},
+        extra=extra,
     )
