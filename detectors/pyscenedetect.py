@@ -16,7 +16,7 @@ from __future__ import annotations
 from scenedetect import open_video, SceneManager
 from scenedetect.detectors import ContentDetector, AdaptiveDetector
 
-from .base import DetectResult, Timer, ffprobe_info
+from .base import DetectResult, Timer, ffprobe_info, wrap_times
 
 
 def _run(video_path, detector, name, downscale):
@@ -32,7 +32,7 @@ def _run(video_path, detector, name, downscale):
         scenes = mgr.get_scene_list()
     # scene list is (start, end) pairs; a cut is the start of every scene after the first
     cuts = sorted({s[0].get_seconds() for s in scenes[1:]}) if len(scenes) > 1 else []
-    return DetectResult(name=name, cuts=cuts, elapsed=t.elapsed,
+    return DetectResult(name=name, events=wrap_times(cuts), elapsed=t.elapsed,
                         n_frames=n_frames, fps_source=fps,
                         extra={"downscale": downscale})
 

@@ -27,7 +27,7 @@ import torch
 # frames come from a read-only pipe buffer; we only read them, never write in place
 warnings.filterwarnings("ignore", message="The given NumPy array is not writable")
 
-from .base import DetectResult, Timer, ffprobe_info
+from .base import DetectResult, Timer, ffprobe_info, wrap_times
 
 
 def _rgb_to_hsv(x):  # x: (B,3,H,W) float in [0,1] -> (B,3,H,W) H,S,V in [0,1]
@@ -136,7 +136,7 @@ def detect(video_path, method="cuda", analyse_h=108, batch=256,
                 last_cut = i
 
     return DetectResult(
-        name=f"torch-gpu[{method}]", cuts=cuts, elapsed=t.elapsed,
+        name=f"torch-gpu[{method}]", events=wrap_times(cuts), elapsed=t.elapsed,
         n_frames=n_frames, fps_source=fps, scores=scores,
         extra={"analyse_res": f"{aw}x{ah}", "batch": batch,
                "adaptive_ratio": adaptive_ratio, "min_score": min_score},

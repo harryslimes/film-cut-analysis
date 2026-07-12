@@ -15,7 +15,7 @@ import subprocess
 import numpy as np
 import torch
 
-from .base import DetectResult, Timer, ffprobe_info
+from .base import DetectResult, Timer, ffprobe_info, wrap_times
 
 _MODEL = None
 
@@ -103,7 +103,7 @@ def detect(video_path, method="cuda", threshold=0.4,
         # on normal fast cutting. For a known flash montage use a targeted region override.
         cuts = dampen_strobe(cuts, dens_window=8, dens_max=8, merge_gap=4, keep_gap=2.5)
     return DetectResult(
-        name=f"transnetv2[{method}]", cuts=cuts, elapsed=t.elapsed,
+        name=f"transnetv2[{method}]", events=wrap_times(cuts), elapsed=t.elapsed,
         n_frames=len(frames), fps_source=fps, scores=preds.tolist(),
         extra={"threshold": threshold, "gradual_height": gradual_height,
                "n_sharp": n_sharp, "n_gradual": n_gradual,

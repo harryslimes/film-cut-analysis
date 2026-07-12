@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .base import DetectResult, Timer, ffprobe_info
+from .base import DetectResult, Timer, ffprobe_info, wrap_times
 
 
 def _extract(video_path):
@@ -122,6 +122,6 @@ def detect(video_path, keep=0.3, earliness_w=0.5, method="cpu") -> DetectResult:
                                     "scene-cuts; motion-vector cuts are unreliable here")
 
     return DetectResult(
-        name="motion-vectors", cuts=cuts, elapsed=timer.elapsed,
+        name="motion-vectors", events=wrap_times(cuts), elapsed=timer.elapsed,
         n_frames=n_frames, fps_source=fps, extra=extra,
     )
