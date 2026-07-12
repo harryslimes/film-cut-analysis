@@ -1,0 +1,8 @@
+# Repository content is normalised to LF. Working copies may be CRLF on Windows;
+# that is fine -- only the committed (index) content must be LF.
+* text=auto eol=lf
+
+# Explicit for the text types this repo ships:
+*.py   text eol=lf
+*.json text eol=lf
+*.md   text eol=lf
