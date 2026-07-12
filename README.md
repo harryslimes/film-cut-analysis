@@ -57,7 +57,7 @@ Abbreviated example (a real document also carries `source.mtime_utc`, the rest o
   "run": { "detector_id": "transnetv2", "backend": "cuda", "settings": { "threshold": 0.4 } },
   "cut_events": [
     { "time": 12.345, "frame": 296, "transition_kind": "hard",
-      "confidence": { "value": 0.98, "metric": "transnet_prob", "higher_is_stronger": true } }
+      "confidence": { "value": 0.98, "metric": "transnet_peak_prob", "higher_is_stronger": true } }
   ],
   "cuts": [12.345],
   "fps": 24.0, "video": "movie.mkv", "detector": "transnetv2[cuda]"

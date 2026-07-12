@@ -16,7 +16,8 @@ import numpy as np
 import torch
 
 from .base import DetectResult, Timer, ffprobe_info
-from detector_events import build_transnet_events, gradual_span_frames, transnet_decode_extra
+from detector_events import (build_transnet_events, gradual_span_frames, peak_prob,
+                             transnet_decode_extra)
 
 _MODEL = None
 
@@ -129,8 +130,10 @@ def detect(video_path, method="cuda", threshold=0.4,
     # Hand plain per-candidate data to the dependency-light builder (A3.5). Hard cuts are
     # emitted before graduals, so a rounded-time collision keeps the hard cut (A1 dedupe).
     # Strobe suppression happens inside the builder. frame = the scene-start / peak frame
-    # (already the first frame of the new shot -- A2 conformant).
-    hard = [(f, float(preds[f])) for f in sharp_frames]
+    # (already the first frame of the new shot -- A2 conformant). A2-3: hard-cut confidence
+    # is the PEAK single-frame prob near the boundary (peak_prob), not preds[f] at the
+    # scene-start frame (post-spike, ~0); the gradual stream already reads its own peak.
+    hard = [(f, peak_prob(preds, f)) for f in sharp_frames]
     gradual = [(f, float(allp[f]), *gradual_span_frames(allp, f, gradual_height))
                for f in gradual_frames]
     events, n_strobe_removed = build_transnet_events(

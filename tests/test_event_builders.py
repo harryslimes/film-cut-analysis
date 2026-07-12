@@ -12,7 +12,7 @@ from cut_events import event_to_dict, validate_events  # noqa: E402
 from detector_events import (  # noqa: E402
     build_minimal_events, build_mv_events, build_torch_events,
     build_transnet_events, ffmpeg_decode_extra, gradual_span_frames,
-    transnet_decode_extra,
+    peak_prob, transnet_decode_extra,
 )
 
 
@@ -73,6 +73,24 @@ class TestGradualSpan(unittest.TestCase):
         self.assertEqual(gradual_span_frames([0.0, 0.9, 0.0], 1, 0.35), (1, 1))
 
 
+class TestPeakProb(unittest.TestCase):
+    """Amendment 2 A2-3: hard-cut confidence is the PEAK single-frame prob over
+    [frame-k, frame], not the collapsed value at the scene-start (boundary) frame."""
+    def test_peak_differs_from_boundary_value(self):
+        # spike at frame 8 (0.93); the boundary frame 10 has collapsed to 0.02.
+        probs = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.05, 0.40, 0.93, 0.30, 0.02]
+        self.assertAlmostEqual(probs[10], 0.02)                 # the old "ashes" read
+        self.assertAlmostEqual(peak_prob(probs, 10, k=5), 0.93)  # window recovers the spike
+        # k too small to reach the spike -> only sees the collapsed tail
+        self.assertAlmostEqual(peak_prob(probs, 10, k=1), 0.30)
+
+    def test_window_clamps_at_zero(self):
+        self.assertAlmostEqual(peak_prob([0.1, 0.7, 0.2], 1, k=5), 0.7)   # lo clamped to 0
+
+    def test_boundary_only_when_it_is_the_max(self):
+        self.assertAlmostEqual(peak_prob([0.2, 0.3, 0.9], 2, k=5), 0.9)
+
+
 class TestTransnet(unittest.TestCase):
     def test_hard_and_gradual_shapes(self):
         hard = [(24, 0.98)]
@@ -83,7 +101,8 @@ class TestTransnet(unittest.TestCase):
         self.assertEqual(kinds, {"hard", "gradual"})
         hard_ev = next(e for e in evs if e.transition_kind == "hard")
         grad_ev = next(e for e in evs if e.transition_kind == "gradual")
-        self.assertEqual(hard_ev.confidence.metric, "transnet_prob")
+        self.assertEqual(hard_ev.confidence.metric, "transnet_peak_prob")   # A2-3 rename
+        self.assertEqual(hard_ev.confidence.value, 0.98)                    # caller's peak passed through
         self.assertIsNone(hard_ev.span)                       # never a span on a hard cut
         self.assertEqual(grad_ev.confidence.metric, "transnet_gradual_prob")
         self.assertEqual(grad_ev.span.start, round(58 / 24.0, 4))
@@ -99,7 +118,7 @@ class TestTransnet(unittest.TestCase):
         evs, _ = build_transnet_events([(25, 0.9)], [(25, 0.5, 24, 26)], 25.0, strobe_guard=False)
         self.assertEqual(len(evs), 1)
         self.assertEqual(evs[0].transition_kind, "hard")
-        self.assertEqual(evs[0].confidence.metric, "transnet_prob")
+        self.assertEqual(evs[0].confidence.metric, "transnet_peak_prob")
 
     def test_strobe_suppression_runs(self):
         # 20 cuts at 0.5 s spacing -> pathologically dense -> dampen_strobe thins them

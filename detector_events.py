@@ -108,18 +108,38 @@ def gradual_span_frames(prob, pf, height):
     return lo, hi
 
 
+# Hard-cut confidence reads the PEAK single-frame probability in a short window ending at
+# the boundary -- NOT the value at the scene-start frame, which is the first frame of the
+# NEW shot, one step past the transition spike, where the probability has already
+# collapsed (Amendment 2 A2-3: on a real film every hard cut scored < 0.4, p50 0.003).
+# k is deliberately small: a sharp transition spikes ~1-2 frames before the new shot, and
+# a short window stays well inside the accepted-cut spacing (min_gap_s ~= 9 frames at
+# 24fps) so a neighbouring cut's spike cannot leak into this cut's confidence.
+PEAK_WINDOW_K = 5
+
+
+def peak_prob(single_probs, frame, k=PEAK_WINDOW_K):
+    """Peak single-frame transition probability over [frame-k, frame] (clamped at 0),
+    the honest hard-cut confidence (metric transnet_peak_prob): the strength of the spike
+    that produced the cut, not the post-transition value at the scene-start frame.
+    Dependency-light -- works on any indexable series (list or numpy array)."""
+    lo = max(0, frame - k)
+    return max(float(single_probs[i]) for i in range(lo, frame + 1))
+
+
 def build_transnet_events(hard, gradual, fps, *, strobe_guard=True, strobe_params=None):
-    """transnet: hard = [(frame, single_prob), ...] and gradual =
+    """transnet: hard = [(frame, peak_prob), ...] and gradual =
     [(frame, allf_prob, span_lo_frame, span_hi_frame), ...]. Emits a "hard" event per
-    sharp cut (metric transnet_prob) and a "gradual" event per dissolve peak (metric
-    transnet_gradual_prob, with a span when the run spans >1 frame). Hard candidates are
+    sharp cut (metric transnet_peak_prob -- the caller passes peak_prob(), the peak
+    single-frame prob near the boundary, A2-3) and a "gradual" event per dissolve peak
+    (metric transnet_gradual_prob, with a span when the run spans >1 frame). Hard candidates are
     emitted before gradual ones, so on a rounded-time collision the hard cut wins
     (first-wins dedupe, A1). Strobe suppression (postfilter.dampen_strobe -- stdlib) then
     thins pathologically dense regions. Returns (events, n_strobe_removed)."""
     def _hard(f, prob):
         t = round(f / fps, 4)
         return t, CutEvent(time=t, frame=int(f), transition_kind="hard",
-                           confidence=Confidence(float(prob), "transnet_prob",
+                           confidence=Confidence(float(prob), "transnet_peak_prob",
                                                  higher_is_stronger=True))
 
     def _gradual(f, prob, lo_f, hi_f):
