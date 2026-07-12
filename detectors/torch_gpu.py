@@ -71,9 +71,11 @@ def detect(video_path, method="cuda", analyse_h=108, batch=256,
 
     if method == "cuda":
         pre = ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
-        # hwdownload can only fetch the GPU frame's own sw format (nv12); the final
-        # -pix_fmt rgb24 then converts on the CPU via swscale.
-        vf = f"scale_cuda={aw}:{ah},hwdownload,format=nv12"
+        # A2-1: convert to 8-bit nv12 ON the GPU (scale_cuda ...:format=nv12) before
+        # hwdownload, so a 10-bit (p010) source downloads cleanly -- hwdownload cannot
+        # emit nv12 from a p010 surface (EINVAL at decode init). The final -pix_fmt rgb24
+        # then converts on the CPU via swscale. The 8-bit path is unaffected.
+        vf = f"scale_cuda={aw}:{ah}:format=nv12,hwdownload,format=nv12"
     else:
         pre = []
         vf = f"scale={aw}:{ah}"

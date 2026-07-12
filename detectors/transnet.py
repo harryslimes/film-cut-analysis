@@ -65,7 +65,11 @@ def detect(video_path, method="cuda", threshold=0.4,
 
     if method == "cuda":
         pre = ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
-        vf = "scale_cuda=48:27,hwdownload,format=nv12"
+        # A2-1: convert to 8-bit nv12 ON the GPU (scale_cuda ...:format=nv12) before
+        # hwdownload -- a 10-bit source decodes to a p010 surface, and hwdownload cannot
+        # emit nv12 from p010 (EINVAL at decode init). Downloading nv12 keeps every path
+        # working; the 10-bit->8-bit reduction is immaterial at a 48x27 thumbnail.
+        vf = "scale_cuda=48:27:format=nv12,hwdownload,format=nv12"
     else:
         pre = []
         vf = "scale=48:27"
