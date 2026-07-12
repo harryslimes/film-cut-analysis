@@ -10,16 +10,25 @@ import subprocess
 import time
 from dataclasses import dataclass, field, asdict
 
+from cut_events import CutEvent, project_cuts   # event-first cut record (design §2)
+
 
 @dataclass
 class DetectResult:
     name: str
-    cuts: list[float]           # seconds, sorted
+    events: list[CutEvent]      # the ONLY cut record; `cuts` is a derived projection
     elapsed: float              # wall-clock seconds spent detecting
     n_frames: int
     fps_source: float           # frame rate of the video
     scores: list[float] | None = None   # optional per-frame change metric
     extra: dict = field(default_factory=dict)
+
+    @property
+    def cuts(self) -> list[float]:
+        """Read-only legacy projection: one float timestamp per event, derived at
+        access time so it can never drift from the events (design §2). There is
+        deliberately no assignable float list -- events are the source of truth."""
+        return project_cuts(self.events)
 
     @property
     def analysed_fps(self) -> float:
@@ -34,6 +43,8 @@ class DetectResult:
     def to_dict(self) -> dict:
         d = asdict(self)
         d.pop("scores", None)          # too big to dump by default
+        d.pop("events", None)          # heavy; the summary keeps the light projection
+        d["cuts"] = self.cuts          # generated projection (legacy summary shape)
         d["analysed_fps"] = round(self.analysed_fps, 1)
         d["realtime_x"] = round(self.realtime_x, 1)
         return d

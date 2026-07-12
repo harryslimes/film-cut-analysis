@@ -1,0 +1,46 @@
+{
+  "_why_invalid": "Design §3.3 rule 3: `cuts` must be exactly [e.time for e in cut_events]. Here `cuts[1]` was hand-edited to 245.999 while cut_events[1].time is 245.1 -- the tampered-projection failure this whole design exists to catch (§2). validate_document must reject it.",
+  "format": "film-cut-analysis/cut-events",
+  "schema_version": 2,
+  "source": {
+    "path": "D:\\Films\\movie.mkv",
+    "size_bytes": 7348291021,
+    "mtime_utc": "2026-07-12T09:14:22Z",
+    "duration_seconds": 7281.442
+  },
+  "run": {
+    "detector_id": "transnetv2",
+    "backend": "cuda",
+    "tool_commit": "df181fa",
+    "tool_dirty": false,
+    "model": "transnetv2-pytorch (weights as installed)",
+    "settings": { "threshold": 0.4, "gradual_height": 0.35, "strobe_guard": true },
+    "generated_by": "cut_times.py",
+    "generated_utc": "2026-07-12T15:40:11Z"
+  },
+  "analysis": {
+    "status": "complete",
+    "coverage": [ { "start": 0.0, "end": 7281.442 } ],
+    "event_count": 2,
+    "warnings": []
+  },
+  "cut_events": [
+    {
+      "time": 12.345,
+      "frame": 296,
+      "transition_kind": "hard",
+      "confidence": { "value": 0.98, "metric": "transnet_prob", "higher_is_stronger": true }
+    },
+    {
+      "time": 245.1,
+      "frame": 5882,
+      "transition_kind": "gradual",
+      "span": { "start": 244.6, "end": 245.71 },
+      "confidence": { "value": 0.41, "metric": "transnet_gradual_prob", "higher_is_stronger": true }
+    }
+  ],
+  "cuts": [12.345, 245.999],
+  "fps": 24.0,
+  "video": "movie.mkv",
+  "detector": "transnetv2[cuda]"
+}
