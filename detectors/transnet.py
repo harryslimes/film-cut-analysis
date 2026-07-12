@@ -15,7 +15,8 @@ import subprocess
 import numpy as np
 import torch
 
-from .base import CutEvent, Confidence, DetectResult, Span, Timer, ffprobe_info
+from .base import DetectResult, Timer, ffprobe_info
+from detector_events import build_transnet_events, gradual_span_frames
 
 _MODEL = None
 
@@ -48,21 +49,6 @@ def _gradual_peaks(allf, fps, height, min_gap_s):
         else:
             i += 1
     return peaks
-
-
-def _gradual_span_frames(allp, pf, height):
-    """Measured extent of a gradual transition: the maximal contiguous run of frames
-    around peak `pf` whose all-frames probability stays >= `height` -- the same signal
-    and threshold that located the peak, so this is honest extent, not a span invented
-    from a point. Returns (lo_frame, hi_frame) with lo <= pf <= hi (pf is itself >=
-    height). Callers omit the span when lo == hi (a single-frame run has no extent)."""
-    lo = pf
-    while lo - 1 >= 0 and allp[lo - 1] >= height:
-        lo -= 1
-    hi = pf
-    while hi + 1 < len(allp) and allp[hi + 1] >= height:
-        hi += 1
-    return lo, hi
 
 
 def detect(video_path, method="cuda", threshold=0.4,
@@ -98,49 +84,36 @@ def detect(video_path, method="cuda", threshold=0.4,
         scenes = model.predictions_to_scenes(preds, threshold=threshold)
 
     # sharp cuts: first frame of every scene after the first (high precision)
-    sharp = [int(s[0]) for s in scenes[1:]] if len(scenes) > 1 else []
-    n_sharp = len(sharp)
-    # dissolve/fade centres from the all-frames stream, if not already a sharp cut
-    n_gradual = 0
+    sharp_frames = [int(s[0]) for s in scenes[1:]] if len(scenes) > 1 else []
+    n_sharp = len(sharp_frames)
+    # dissolve/fade centres from the all-frames stream, if not already near an accepted
+    # cut. `accepted` grows as graduals are taken, so graduals suppress each other too --
+    # acceptance logic is UNCHANGED from before the amendment.
+    gradual_frames = []
     if gradual_height and gradual_height > 0:
         gap = max(1, int(min_gap_s * fps))
+        accepted = list(sharp_frames)
         for pf in _gradual_peaks(allp, fps, gradual_height, min_gap_s):
-            if all(abs(pf - s) > gap for s in sharp):
-                sharp.append(pf)
-                n_gradual += 1
-    cuts = sorted(round(f / fps, 4) for f in sharp)
-    # suppress strobe/flash bursts (e.g. Vertigo's Nightmare): thins only pathologically
-    # dense regions, leaves normal cutting untouched. See postfilter.dampen_strobe.
-    n_before = len(cuts)
-    if strobe_guard:
-        from postfilter import dampen_strobe
-        # safe global setting: thins only pathologically dense regions, zero collateral
-        # on normal fast cutting. For a known flash montage use a targeted region override.
-        cuts = dampen_strobe(cuts, dens_window=8, dens_max=8, merge_gap=4, keep_gap=2.5)
-    # --- per-cut event metadata (enrichment only; does not change which cuts survive) ---
-    # sharp[:n_sharp] are hard-stream frames; sharp[n_sharp:] are gradual-stream peaks.
-    # Distinct frames -> distinct times, so each time keys exactly one event; events are
-    # built FROM the final `cuts` list, so the .cuts projection is unchanged by construction.
-    # `tc` (not `t`) holds the time -- `t` is the Timer, used below for elapsed.
-    by_time = {}
-    for idx, f in enumerate(sharp):
-        tc = round(f / fps, 4)
-        if idx < n_sharp:
-            by_time[tc] = CutEvent(
-                time=tc, frame=f, transition_kind="hard",
-                confidence=Confidence(float(preds[f]), "transnet_prob", higher_is_stronger=True))
-        else:
-            lo_f, hi_f = _gradual_span_frames(allp, f, gradual_height)
-            by_time[tc] = CutEvent(
-                time=tc, frame=f, transition_kind="gradual",
-                confidence=Confidence(float(allp[f]), "transnet_gradual_prob", higher_is_stronger=True),
-                span=Span(round(lo_f / fps, 4), round(hi_f / fps, 4)) if hi_f > lo_f else None)
-    events = [by_time[c] for c in cuts]
+            if all(abs(pf - g) > gap for g in accepted):
+                gradual_frames.append(pf)
+                accepted.append(pf)
+    n_gradual = len(gradual_frames)
+
+    # Hand plain per-candidate data to the dependency-light builder (A3.5). Hard cuts are
+    # emitted before graduals, so a rounded-time collision keeps the hard cut (A1 dedupe).
+    # Strobe suppression happens inside the builder. frame = the scene-start / peak frame
+    # (already the first frame of the new shot -- A2 conformant).
+    hard = [(f, float(preds[f])) for f in sharp_frames]
+    gradual = [(f, float(allp[f]), *gradual_span_frames(allp, f, gradual_height))
+               for f in gradual_frames]
+    events, n_strobe_removed = build_transnet_events(
+        hard, gradual, fps, strobe_guard=strobe_guard,
+        strobe_params=dict(dens_window=8, dens_max=8, merge_gap=4, keep_gap=2.5))
 
     return DetectResult(
         name=f"transnetv2[{method}]", events=events, elapsed=t.elapsed,
         n_frames=len(frames), fps_source=fps, scores=preds.tolist(),
-        extra={"threshold": threshold, "gradual_height": gradual_height,
-               "n_sharp": n_sharp, "n_gradual": n_gradual,
-               "n_strobe_removed": n_before - len(cuts)},
+        settings={"method": method, "threshold": threshold, "gradual_height": gradual_height,
+                  "min_gap_s": min_gap_s, "strobe_guard": strobe_guard},
+        extra={"n_sharp": n_sharp, "n_gradual": n_gradual, "n_strobe_removed": n_strobe_removed},
     )

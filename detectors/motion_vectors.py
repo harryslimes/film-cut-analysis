@@ -32,7 +32,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from .base import CutEvent, Confidence, DetectResult, Timer, ffprobe_info
+from .base import DetectResult, Timer, ffprobe_info
+from detector_events import build_mv_events
 
 
 def _extract(video_path):
@@ -114,20 +115,14 @@ def detect(video_path, keep=0.3, earliness_w=0.5, method="cpu") -> DetectResult:
 
             corr = np.array([corrob(i) for i in Iidx])
             score = corr + earliness_w * earliness
-            # keep-point: an I-frame is a cut when its combined score clears `keep`.
-            # Build events here so each carries frame + native mv_score. time is the
-            # I-frame's PTS timestamp (round(It[k], 3)) exactly as before, and events are
-            # sorted by time, so the .cuts projection is byte-identical by construction.
-            # frame = Iidx[k], the I-frame's index in the detector's decoded frame
-            # sequence; time comes from PTS, so frame/fps != time here (§3.2, expected).
-            # transition_kind stays "unknown": this scores whether an I-frame is a scene
-            # cut, with no hard/gradual classifier (§3.2, never a guessed "hard").
-            kept = [(round(float(It[k]), 3), int(Iidx[k]), float(score[k]))
-                    for k in range(len(Iidx)) if score[k] >= keep]
-            kept.sort(key=lambda r: r[0])
-            events = [CutEvent(time=tm, frame=fr,
-                               confidence=Confidence(sc, "mv_score", higher_is_stronger=True))
-                      for tm, fr, sc in kept]
+            # keep-point (acceptance UNCHANGED): an I-frame is a cut when its combined
+            # score clears `keep`. Hand plain (pts, iframe_index, score) records to the
+            # dependency-light builder (A3.5), in ascending order. build_mv_events rounds
+            # the PTS time to 3 dp, sets frame = the I-frame index (already the first frame
+            # of the new shot -- A2 conformant), and first-wins dedupes rounded collisions.
+            keep_records = [(float(It[k]), int(Iidx[k]), float(score[k]))
+                            for k in range(len(Iidx)) if score[k] >= keep]
+            events = build_mv_events(keep_records)
             extra = {"keyint": round(keyint, 2), "regularity": round(regularity, 2),
                      "n_iframes": int(isI.sum()), "fixed_gop": regularity > 0.9}
             if extra["fixed_gop"]:
@@ -136,5 +131,7 @@ def detect(video_path, keep=0.3, earliness_w=0.5, method="cpu") -> DetectResult:
 
     return DetectResult(
         name="motion-vectors", events=events, elapsed=timer.elapsed,
-        n_frames=n_frames, fps_source=fps, extra=extra,
+        n_frames=n_frames, fps_source=fps,
+        settings={"keep": keep, "earliness_w": earliness_w, "method": method},
+        extra=extra,
     )

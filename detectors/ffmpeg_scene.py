@@ -15,7 +15,8 @@ from __future__ import annotations
 import re
 import subprocess
 
-from .base import DetectResult, Timer, ffprobe_info, wrap_times
+from .base import DetectResult, Timer, ffprobe_info
+from detector_events import build_minimal_events
 
 _SHOWINFO = re.compile(r"pts_time:([0-9.]+)")
 
@@ -43,7 +44,8 @@ def detect(video_path, threshold=0.4, analyse_h=180, method="cpu") -> DetectResu
 
     cuts = sorted(float(m) for m in _SHOWINFO.findall(stderr))
     return DetectResult(
-        name=f"ffmpeg-scene[{method}]", events=wrap_times(cuts), elapsed=t.elapsed,
+        name=f"ffmpeg-scene[{method}]", events=build_minimal_events(cuts), elapsed=t.elapsed,
         n_frames=n_frames, fps_source=fps,
-        extra={"threshold": threshold, "analyse_h": analyse_h},
+        settings={"method": method, "threshold": threshold, "analyse_h": analyse_h},
+        extra={},
     )

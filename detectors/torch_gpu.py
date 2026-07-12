@@ -27,7 +27,8 @@ import torch
 # frames come from a read-only pipe buffer; we only read them, never write in place
 warnings.filterwarnings("ignore", message="The given NumPy array is not writable")
 
-from .base import CutEvent, Confidence, DetectResult, Timer, ffprobe_info
+from .base import DetectResult, Timer, ffprobe_info
+from detector_events import build_torch_events
 
 
 def _rgb_to_hsv(x):  # x: (B,3,H,W) float in [0,1] -> (B,3,H,W) H,S,V in [0,1]
@@ -120,9 +121,9 @@ def detect(video_path, method="cuda", analyse_h=108, batch=256,
             flush(pending)
         proc.wait()
 
-    # --- adaptive thresholding on the score curve ---
+    # --- adaptive thresholding on the score curve (acceptance logic UNCHANGED) ---
     s = np.asarray(scores, dtype=np.float64)
-    events = []
+    accepts = []          # (i, spike) per accepted transition, in ascending-i order
     n = len(s)
     last_cut = -10 ** 9
     for i in range(1, n):
@@ -132,21 +133,19 @@ def detect(video_path, method="cuda", analyse_h=108, batch=256,
         local = np.median(neigh) if neigh.size else 0.0
         if s[i] >= min_score and s[i] >= adaptive_ratio * (local + 1e-6):
             if i - last_cut >= 4:  # non-max suppression
-                # Same accept, unchanged: same time and order -> the .cuts projection is
-                # byte-identical to before. `spike` is the NATIVE confidence -- exactly the
-                # quantity the accept test compares to adaptive_ratio -- with (local + 1e-6)
-                # as the denominator (matches the threshold, stays finite when local == 0).
-                # transition_kind stays "unknown": a lone spike test can't tell a hard cut
-                # from a dissolve that happens to spike, so we never guess "hard" (§3.2).
-                spike = float(s[i] / (local + 1e-6))
-                events.append(CutEvent(
-                    time=round(i / fps, 4), frame=i,
-                    confidence=Confidence(spike, "hsv_spike_ratio", higher_is_stronger=True)))
+                # `spike` is the NATIVE confidence -- exactly the quantity the accept test
+                # compares to adaptive_ratio -- with (local + 1e-6) as the denominator
+                # (matches the threshold, stays finite when local == 0). build_torch_events
+                # records frame = i + 1 (A2: scores[i] is the change INTO frame i+1) and
+                # transition_kind "unknown" (a lone spike test can't tell hard from dissolve).
+                accepts.append((i, float(s[i] / (local + 1e-6))))
                 last_cut = i
 
     return DetectResult(
-        name=f"torch-gpu[{method}]", events=events, elapsed=t.elapsed,
+        name=f"torch-gpu[{method}]", events=build_torch_events(accepts, fps), elapsed=t.elapsed,
         n_frames=n_frames, fps_source=fps, scores=scores,
-        extra={"analyse_res": f"{aw}x{ah}", "batch": batch,
-               "adaptive_ratio": adaptive_ratio, "min_score": min_score},
+        settings={"method": method, "analyse_h": analyse_h, "batch": batch, "wV": wV,
+                  "adaptive_ratio": adaptive_ratio, "min_score": min_score,
+                  "window": window, "device": device},
+        extra={"analyse_res": f"{aw}x{ah}"},
     )

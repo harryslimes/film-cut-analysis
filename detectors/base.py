@@ -22,7 +22,8 @@ class DetectResult:
     n_frames: int
     fps_source: float           # frame rate of the video
     scores: list[float] | None = None   # optional per-frame change metric
-    extra: dict = field(default_factory=dict)
+    settings: dict = field(default_factory=dict)   # resolved input config (A3.1); run.settings reads this
+    extra: dict = field(default_factory=dict)       # diagnostics only -- never configuration
 
     @property
     def cuts(self) -> list[float]:
