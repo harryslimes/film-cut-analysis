@@ -8,6 +8,8 @@ silently poisoned by reading the wrong kind of file as ground-truth input.
 """
 from __future__ import annotations
 
+import math
+
 SCORE_CACHE_FORMAT = "film-cut-analysis/score-cache"
 
 
@@ -18,6 +20,8 @@ def load_score_cache(d):
       - the tagged score-cache (``format == SCORE_CACHE_FORMAT``), or
       - a narrow untagged legacy cache: no ``format`` key, keys a subset of
         {cuts, fps}, with a ``cuts`` list present.
+    Both forms require BOTH a ``cuts`` list AND a valid ``fps`` (a positive finite
+    number, not bool) -- a missing fps is rejected, never invented (S3-F2 gap 3).
     Rejects v2 cut-events documents and every other / unknown format."""
     if not isinstance(d, dict):
         raise ValueError("cache is not a JSON object")
@@ -31,4 +35,7 @@ def load_score_cache(d):
     cuts = d.get("cuts")
     if not isinstance(cuts, list):
         raise ValueError("cache has no cuts list")
-    return cuts, d.get("fps", 24.0)
+    fps = d.get("fps")
+    if not (isinstance(fps, (int, float)) and not isinstance(fps, bool) and math.isfinite(fps) and fps > 0):
+        raise ValueError(f"cache fps missing or invalid ({fps!r})")
+    return cuts, fps
