@@ -33,7 +33,10 @@ def _detect_worker(video):
         from detectors import transnet
         r = transnet.detect(video, method="cuda")
         stem = video.rsplit(".", 1)[0]
-        _json.dump({"cuts": r.cuts, "fps": r.fps_source}, open(stem + ".cuts.json", "w"))
+        # design §4: tag the private cache so a v2-export consumer never mistakes this
+        # reduced shape for a full cut-events document. Reader below still accepts both.
+        _json.dump({"format": "film-cut-analysis/score-cache", "cuts": r.cuts, "fps": r.fps_source},
+                   open(stem + ".cuts.json", "w"))
         return (video, len(r.cuts), None)
     except Exception as e:  # noqa
         return (video, 0, str(e)[:200])
