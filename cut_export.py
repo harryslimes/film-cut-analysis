@@ -13,9 +13,9 @@ from __future__ import annotations
 import json
 
 from cut_events import (
-    CutEvent, ExportValidationError, event_from_dict, event_to_dict,
-    project_cuts, validate_events,
+    ExportValidationError, event_to_dict, reject_nan_and_null, validate_event_dict,
 )
+from cut_events import _finite as _finite
 
 FORMAT = "film-cut-analysis/cut-events"
 SCHEMA_VERSION = 2
@@ -28,36 +28,20 @@ def _drop_none(d: dict) -> dict:
 
 
 def build_document(events, *, source, run, analysis, fps, video, detector) -> dict:
-    """Build the §3 v2 document.
-
-    ``source`` / ``run`` are dicts of provenance (None values are omitted).
-    ``analysis`` supplies ``status`` (complete|partial|failed), ``coverage``
-    (list of {start,end} spans actually analysed) and optional ``warnings``;
-    ``event_count`` is derived here, not trusted from the caller.
-
-    Validates the events against §3.3 and self-tests the ``cuts`` projection.
-    Raises `ExportValidationError` on any violation."""
-    status = analysis.get("status")
-    if status not in VALID_STATUS:
-        raise ExportValidationError(f"analysis.status {status!r} not in {VALID_STATUS}")
-    coverage = list(analysis.get("coverage") or [])
-
-    validate_events(events, coverage=coverage)
-
+    """Build the §3 v2 document from a list of CutEvents, then validate it through the
+    SAME path used on read (`validate_document`) -- write and read share one validator
+    (amendment A3.2). ``source`` / ``run`` are provenance dicts (None values omitted);
+    ``analysis`` supplies status / coverage / warnings; ``event_count`` and the legacy
+    ``cuts`` projection are derived here, not trusted. Raises `ExportValidationError`."""
     cut_events = [event_to_dict(e) for e in events]
-    cuts = project_cuts(events)
-    # design §3.3 rule 3: cuts is exactly the event projection -- verified, not trusted.
-    if cuts != [ce["time"] for ce in cut_events]:
-        raise ExportValidationError("projection mismatch: cuts != [e.time for e in cut_events]")
-
+    cuts = [ce["time"] for ce in cut_events]           # projection derived from the events
     analysis_block = {
-        "status": status,
-        "coverage": [{"start": s["start"], "end": s["end"]} for s in coverage],
+        "status": analysis.get("status"),
+        "coverage": [dict(s) for s in (analysis.get("coverage") or [])],
         "event_count": len(events),
         "warnings": list(analysis.get("warnings") or []),
     }
-
-    return {
+    doc = {
         "format": FORMAT,
         "schema_version": SCHEMA_VERSION,
         "source": _drop_none(dict(source)),
@@ -70,47 +54,64 @@ def build_document(events, *, source, run, analysis, fps, video, detector) -> di
         "video": video,
         "detector": detector,
     }
+    validate_document(doc)                             # one validation path (write == read)
+    return doc
 
 
 def serialize(events, *, source, run, analysis, fps, video, detector, indent=2) -> str:
-    """`build_document` then `json.dumps`. The string a v2 export writes to disk."""
-    return json.dumps(
-        build_document(events, source=source, run=run, analysis=analysis,
-                       fps=fps, video=video, detector=detector),
-        indent=indent,
-    )
+    """`build_document` then `json.dumps` with ``allow_nan=False`` (amendment A3.2 --
+    NaN / Infinity can never reach the file). The string a v2 export writes to disk."""
+    doc = build_document(events, source=source, run=run, analysis=analysis,
+                         fps=fps, video=video, detector=detector)
+    return json.dumps(doc, indent=indent, allow_nan=False)
 
 
 def validate_document(doc: dict) -> None:
-    """Validate an already-built v2 document (e.g. a repo fixture) against §3.
+    """The single authority for a v2 document, used by both write and read (A3.2).
 
-    Import policy (design §3.1): wrong ``format`` or unsupported
-    ``schema_version`` are rejected outright -- never best-effort. Then the
-    event-level §3.3 rules are re-run and the ``cuts`` projection is checked
-    against the events. Raises `ExportValidationError`."""
+    Import policy (§3.1): wrong ``format`` / unsupported ``schema_version`` rejected
+    outright. Then: no nulls or NaN/Inf anywhere (recursive); status valid; coverage
+    ordered (start < end) and finite; every event validated by the shared
+    `validate_event_dict` (required keys genuinely required -- no defaulting/repair --
+    plus span-only-on-gradual, flags whitelist, bool checks, ordering, coverage bound);
+    ``event_count`` matches; and the ``cuts`` projection equals the events. Raises
+    `ExportValidationError`."""
+    if not isinstance(doc, dict):
+        raise ExportValidationError("document must be an object")
     if doc.get("format") != FORMAT:
         raise ExportValidationError(f"wrong format {doc.get('format')!r} (expected {FORMAT!r})")
     if doc.get("schema_version") != SCHEMA_VERSION:
         raise ExportValidationError(
             f"unsupported schema_version {doc.get('schema_version')!r} (expected {SCHEMA_VERSION})")
 
+    reject_nan_and_null(doc)                           # no nulls / NaN / Inf at any depth
+
     analysis = doc.get("analysis") or {}
     status = analysis.get("status")
     if status not in VALID_STATUS:
         raise ExportValidationError(f"analysis.status {status!r} not in {VALID_STATUS}")
+
     coverage = list(analysis.get("coverage") or [])
+    for j, s in enumerate(coverage):
+        if not (isinstance(s, dict) and "start" in s and "end" in s):
+            raise ExportValidationError(f"coverage[{j}] must be an object with start and end")
+        if not (_finite(s["start"]) and _finite(s["end"])):
+            raise ExportValidationError(f"coverage[{j}] bounds must be finite")
+        if not s["start"] < s["end"]:
+            raise ExportValidationError(f"coverage[{j}] must be ordered (start < end)")
 
     cut_events = doc.get("cut_events")
     if not isinstance(cut_events, list):
         raise ExportValidationError("cut_events must be a list")
-    events = [event_from_dict(ce) for ce in cut_events]
-    validate_events(events, coverage=coverage)
+    prev = None
+    for i, ed in enumerate(cut_events):
+        prev = validate_event_dict(ed, i, coverage, prev)
 
-    if "event_count" in analysis and analysis["event_count"] != len(events):
+    if "event_count" in analysis and analysis["event_count"] != len(cut_events):
         raise ExportValidationError(
-            f"analysis.event_count {analysis['event_count']} != {len(events)} cut_events")
+            f"analysis.event_count {analysis['event_count']} != {len(cut_events)} cut_events")
 
-    projected = project_cuts(events)
+    projected = [ed["time"] for ed in cut_events]
     if doc.get("cuts") != projected:
         raise ExportValidationError(
             "projection mismatch: document cuts != [e.time for e in cut_events]")

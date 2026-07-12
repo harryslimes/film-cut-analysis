@@ -183,7 +183,7 @@ def main():
     if args.format in ("json", "all"):
         p = stem + ".cuts.json"
         doc = build_v2_document(args.video, args.detector, res)
-        json.dump(doc, open(p, "w"), indent=2); wrote.append(p)
+        json.dump(doc, open(p, "w"), indent=2, allow_nan=False); wrote.append(p)
     for p in wrote:
         print("wrote", p)
 

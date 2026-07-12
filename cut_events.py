@@ -14,6 +14,7 @@ import math
 from dataclasses import dataclass
 
 VALID_KINDS = ("hard", "gradual", "unknown")
+DOCUMENTED_FLAGS = ("strobe_suppressed",)   # the only sanctioned flags (design §3.2)
 
 
 class ExportValidationError(ValueError):
@@ -80,44 +81,97 @@ def _within_coverage(t, coverage) -> bool:
     return False
 
 
-def validate_events(events, coverage=None) -> None:
-    """Enforce the event-level slice of design §3.3. Raises `ExportValidationError`
-    on the first violation.
+def reject_nan_and_null(obj, path="$") -> None:
+    """Recursively reject ``None`` (omission-only, never null) and non-finite floats
+    (NaN / Infinity) at any depth of a document (amendment A3.2). Booleans pass."""
+    if obj is None:
+        raise ExportValidationError(f"null value at {path} -- v2 is omission-only, no nulls")
+    if isinstance(obj, bool):
+        return
+    if isinstance(obj, float) and not math.isfinite(obj):
+        raise ExportValidationError(f"non-finite number at {path}")
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            reject_nan_and_null(v, f"{path}.{k}")
+    elif isinstance(obj, (list, tuple)):
+        for j, v in enumerate(obj):
+            reject_nan_and_null(v, f"{path}[{j}]")
 
-    Rules: times finite and >= 0 (and within ``coverage`` when supplied);
-    strictly ascending with no duplicate times; ``transition_kind`` in the known
-    set; span bounds finite with ``start <= time <= end``; ``confidence`` (when
-    present) carries a finite value and a non-empty ``metric``."""
+
+def validate_event_dict(d, index=0, coverage=None, prev_time=None):
+    """Validate ONE serialized event dict against design §3.3 + amendment A3.2, and
+    return its time (for ordering). This is the SINGLE event-validation path shared by
+    write (`build_document`) and read (`validate_document`): required keys are genuinely
+    required -- nothing is defaulted or repaired; invalid input is rejected. Raises
+    `ExportValidationError`."""
+    if not isinstance(d, dict):
+        raise ExportValidationError(f"event {index}: must be an object")
+    if "time" not in d:
+        raise ExportValidationError(f"event {index}: missing required 'time'")
+    t = d["time"]
+    if not _finite(t) or t < 0:
+        raise ExportValidationError(f"event {index}: time must be finite and >= 0 (got {t!r})")
+    if "transition_kind" not in d:
+        raise ExportValidationError(f"event {index}: missing required 'transition_kind'")
+    kind = d["transition_kind"]
+    if kind not in VALID_KINDS:
+        raise ExportValidationError(f"event {index}: transition_kind {kind!r} not in {VALID_KINDS}")
+    if prev_time is not None:
+        if t == prev_time:
+            raise ExportValidationError(f"event {index}: duplicate time {t} (dedupe before emit)")
+        if t < prev_time:
+            raise ExportValidationError(
+                f"event {index}: times must be strictly ascending ({t} after {prev_time})")
+    if "frame" in d:
+        f = d["frame"]
+        if not isinstance(f, int) or isinstance(f, bool) or f < 0:
+            raise ExportValidationError(f"event {index}: frame must be a non-negative int (got {f!r})")
+    if "span" in d:
+        if kind != "gradual":
+            raise ExportValidationError(
+                f"event {index}: span only allowed on gradual events (kind={kind!r})")
+        span = d["span"]
+        if not (isinstance(span, dict) and "start" in span and "end" in span):
+            raise ExportValidationError(f"event {index}: span must be an object with start and end")
+        lo, hi = span["start"], span["end"]
+        if not (_finite(lo) and _finite(hi)):
+            raise ExportValidationError(f"event {index}: span bounds must be finite")
+        if not (lo <= t <= hi):
+            raise ExportValidationError(
+                f"event {index}: span sandwich violated (need {lo} <= {t} <= {hi})")
+    if "confidence" in d:
+        c = d["confidence"]
+        if not isinstance(c, dict):
+            raise ExportValidationError(f"event {index}: confidence must be an object")
+        for key in ("value", "metric", "higher_is_stronger"):
+            if key not in c:
+                raise ExportValidationError(f"event {index}: confidence missing required {key!r}")
+        if not _finite(c["value"]):
+            raise ExportValidationError(f"event {index}: confidence.value must be finite")
+        if not (isinstance(c["metric"], str) and c["metric"]):
+            raise ExportValidationError(f"event {index}: confidence.metric must be a non-empty string")
+        if not isinstance(c["higher_is_stronger"], bool):
+            raise ExportValidationError(f"event {index}: confidence.higher_is_stronger must be a bool")
+    if "flags" in d:
+        flags = d["flags"]
+        if not isinstance(flags, list) or not all(isinstance(x, str) for x in flags):
+            raise ExportValidationError(f"event {index}: flags must be a list of strings")
+        bad = [x for x in flags if x not in DOCUMENTED_FLAGS]
+        if bad:
+            raise ExportValidationError(
+                f"event {index}: undocumented flags {bad} (allowed: {DOCUMENTED_FLAGS})")
+    if coverage and not _within_coverage(t, coverage):
+        raise ExportValidationError(f"event {index}: time {t} outside declared coverage")
+    return t
+
+
+def validate_events(events, coverage=None) -> None:
+    """Object-level entry point: validate a list of CutEvents by routing each through
+    the shared `validate_event_dict` (via `event_to_dict`) -- so objects and documents
+    are checked by exactly the same rules. Raises `ExportValidationError`."""
     prev = None
     for i, e in enumerate(events):
-        if not _finite(e.time) or e.time < 0:
-            raise ExportValidationError(f"event {i}: time must be finite and >= 0 (got {e.time!r})")
-        if e.transition_kind not in VALID_KINDS:
-            raise ExportValidationError(
-                f"event {i}: transition_kind {e.transition_kind!r} not in {VALID_KINDS}")
-        if e.frame is not None and (not isinstance(e.frame, int) or isinstance(e.frame, bool) or e.frame < 0):
-            raise ExportValidationError(f"event {i}: frame must be a non-negative int (got {e.frame!r})")
-        if prev is not None:
-            if e.time == prev:
-                raise ExportValidationError(f"event {i}: duplicate time {e.time} (dedupe before emit)")
-            if e.time < prev:
-                raise ExportValidationError(
-                    f"event {i}: times must be strictly ascending ({e.time} after {prev})")
-        prev = e.time
-        if e.span is not None:
-            if not (_finite(e.span.start) and _finite(e.span.end)):
-                raise ExportValidationError(f"event {i}: span bounds must be finite")
-            if not (e.span.start <= e.time <= e.span.end):
-                raise ExportValidationError(
-                    f"event {i}: span sandwich violated "
-                    f"(need start {e.span.start} <= time {e.time} <= end {e.span.end})")
-        if e.confidence is not None:
-            if not _finite(e.confidence.value):
-                raise ExportValidationError(f"event {i}: confidence.value must be finite")
-            if not (isinstance(e.confidence.metric, str) and e.confidence.metric):
-                raise ExportValidationError(f"event {i}: confidence requires a non-empty metric")
-        if coverage and not _within_coverage(e.time, coverage):
-            raise ExportValidationError(f"event {i}: time {e.time} outside declared coverage")
+        prev = validate_event_dict(event_to_dict(e), i, coverage, prev)
 
 
 def event_to_dict(e: CutEvent) -> dict:
