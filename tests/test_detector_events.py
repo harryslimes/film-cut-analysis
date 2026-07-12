@@ -73,11 +73,14 @@ class TestAllDetectorsConverted(unittest.TestCase):
         with open(os.path.join(ROOT, rel), encoding="utf-8") as fh:
             return fh.read()
 
-    def test_every_detector_uses_events_wrap_times(self):
+    def test_every_detector_constructs_with_events(self):
+        # Durable cross-detector invariant: each builds DetectResult with an `events=`
+        # arg (minimal detectors via wrap_times(...); enriched ones, e.g. torch_gpu from
+        # S3-E3, build CutEvents directly) -- never the old float container.
         for rel in DETECTOR_FILES:
             src = self._src(rel)
             self.assertIn("DetectResult(", src, f"{rel}: no DetectResult construction")
-            self.assertIn("events=wrap_times(", src, f"{rel}: not converted to events=wrap_times(...)")
+            self.assertIn("events=", src, f"{rel}: not constructing with events=")
 
     def test_no_detector_still_passes_a_cuts_kwarg(self):
         # the old kwarg was written `cuts=cuts` (no space); local assignments use
