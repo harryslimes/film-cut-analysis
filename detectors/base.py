@@ -10,8 +10,8 @@ import subprocess
 import time
 from dataclasses import dataclass, field, asdict
 
-from cut_events import CutEvent, Confidence, project_cuts, wrap_times   # event-first cut record (design §2)
-# CutEvent/Confidence/wrap_times re-exported here so detectors build events off the usual `.base` surface.
+from cut_events import CutEvent, Confidence, Span, project_cuts, wrap_times   # event-first cut record (design §2)
+# CutEvent/Confidence/Span/wrap_times re-exported here so detectors build events off the usual `.base` surface.
 
 
 @dataclass

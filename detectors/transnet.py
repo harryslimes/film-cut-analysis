@@ -15,7 +15,7 @@ import subprocess
 import numpy as np
 import torch
 
-from .base import DetectResult, Timer, ffprobe_info, wrap_times
+from .base import CutEvent, Confidence, DetectResult, Span, Timer, ffprobe_info
 
 _MODEL = None
 
@@ -48,6 +48,21 @@ def _gradual_peaks(allf, fps, height, min_gap_s):
         else:
             i += 1
     return peaks
+
+
+def _gradual_span_frames(allp, pf, height):
+    """Measured extent of a gradual transition: the maximal contiguous run of frames
+    around peak `pf` whose all-frames probability stays >= `height` -- the same signal
+    and threshold that located the peak, so this is honest extent, not a span invented
+    from a point. Returns (lo_frame, hi_frame) with lo <= pf <= hi (pf is itself >=
+    height). Callers omit the span when lo == hi (a single-frame run has no extent)."""
+    lo = pf
+    while lo - 1 >= 0 and allp[lo - 1] >= height:
+        lo -= 1
+    hi = pf
+    while hi + 1 < len(allp) and allp[hi + 1] >= height:
+        hi += 1
+    return lo, hi
 
 
 def detect(video_path, method="cuda", threshold=0.4,
@@ -102,8 +117,28 @@ def detect(video_path, method="cuda", threshold=0.4,
         # safe global setting: thins only pathologically dense regions, zero collateral
         # on normal fast cutting. For a known flash montage use a targeted region override.
         cuts = dampen_strobe(cuts, dens_window=8, dens_max=8, merge_gap=4, keep_gap=2.5)
+    # --- per-cut event metadata (enrichment only; does not change which cuts survive) ---
+    # sharp[:n_sharp] are hard-stream frames; sharp[n_sharp:] are gradual-stream peaks.
+    # Distinct frames -> distinct times, so each time keys exactly one event; events are
+    # built FROM the final `cuts` list, so the .cuts projection is unchanged by construction.
+    # `tc` (not `t`) holds the time -- `t` is the Timer, used below for elapsed.
+    by_time = {}
+    for idx, f in enumerate(sharp):
+        tc = round(f / fps, 4)
+        if idx < n_sharp:
+            by_time[tc] = CutEvent(
+                time=tc, frame=f, transition_kind="hard",
+                confidence=Confidence(float(preds[f]), "transnet_prob", higher_is_stronger=True))
+        else:
+            lo_f, hi_f = _gradual_span_frames(allp, f, gradual_height)
+            by_time[tc] = CutEvent(
+                time=tc, frame=f, transition_kind="gradual",
+                confidence=Confidence(float(allp[f]), "transnet_gradual_prob", higher_is_stronger=True),
+                span=Span(round(lo_f / fps, 4), round(hi_f / fps, 4)) if hi_f > lo_f else None)
+    events = [by_time[c] for c in cuts]
+
     return DetectResult(
-        name=f"transnetv2[{method}]", events=wrap_times(cuts), elapsed=t.elapsed,
+        name=f"transnetv2[{method}]", events=events, elapsed=t.elapsed,
         n_frames=len(frames), fps_source=fps, scores=preds.tolist(),
         extra={"threshold": threshold, "gradual_height": gradual_height,
                "n_sharp": n_sharp, "n_gradual": n_gradual,
