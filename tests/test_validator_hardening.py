@@ -21,8 +21,8 @@ def _base_doc():
     ]
     return build_document(
         events,
-        source={"path": "m.mkv", "size_bytes": 10},
-        run={"detector_id": "transnetv2", "backend": "cuda"},
+        source={"path": "m.mkv", "size_bytes": 10, "mtime_utc": "2026-07-12T09:14:22Z"},
+        run={"detector_id": "transnetv2", "backend": "cuda", "settings": {"threshold": 0.4}},
         analysis={"status": "complete", "coverage": [{"start": 0.0, "end": 100.0}], "warnings": []},
         fps=25.0, video="m.mkv", detector="transnetv2[cuda]")
 
@@ -120,12 +120,14 @@ class TestDuplicateTimeOnRead(unittest.TestCase):
 
 class TestOnePathWriteEqualsRead(unittest.TestCase):
     def test_build_document_rejects_at_write(self):
-        # the same rule (span-only-on-gradual) that read enforces must fire on WRITE
+        # the same rule (span-only-on-gradual) that read enforces must fire on WRITE. The
+        # rest of the doc is complete so span-on-hard is the ONLY violation.
         with self.assertRaises(ExportValidationError):
             build_document(
                 [CutEvent(time=1.0, transition_kind="hard", span=Span(0.9, 1.1))],
-                source={"path": "m"}, run={},
-                analysis={"status": "complete", "coverage": [{"start": 0.0, "end": 10.0}]},
+                source={"path": "m", "size_bytes": 1, "mtime_utc": "t"},
+                run={"detector_id": "x", "settings": {}},
+                analysis={"status": "complete", "coverage": [{"start": 0.0, "end": 10.0}], "warnings": []},
                 fps=25.0, video="m", detector="x")
 
 
@@ -133,11 +135,64 @@ class TestSerializeAllowNan(unittest.TestCase):
     def test_serialized_json_has_no_nan_tokens(self):
         s = serialize(
             [CutEvent(time=1.0, transition_kind="hard", confidence=Confidence(0.9, "m"))],
-            source={"path": "m"}, run={},
-            analysis={"status": "complete", "coverage": [{"start": 0.0, "end": 10.0}]},
+            source={"path": "m", "size_bytes": 1, "mtime_utc": "t"},
+            run={"detector_id": "x", "settings": {}},
+            analysis={"status": "complete", "coverage": [{"start": 0.0, "end": 10.0}], "warnings": []},
             fps=25.0, video="m", detector="x")
         self.assertNotIn("NaN", s)
         self.assertNotIn("Infinity", s)
+
+
+class TestMissingRequiredRejected(unittest.TestCase):
+    """S3-F2 gap 1: required document / block keys are genuinely required on read."""
+    def _reject_without(self, *path):
+        d = _base_doc()
+        node = d
+        for k in path[:-1]:
+            node = node[k]
+        del node[path[-1]]
+        self.assertRaises(ExportValidationError, validate_document, d)
+
+    def test_missing_source(self):            self._reject_without("source")
+    def test_missing_run(self):               self._reject_without("run")
+    def test_missing_analysis(self):          self._reject_without("analysis")
+    def test_missing_fps(self):               self._reject_without("fps")
+    def test_missing_video(self):             self._reject_without("video")
+    def test_missing_detector(self):          self._reject_without("detector")
+    def test_missing_cut_events(self):        self._reject_without("cut_events")
+    def test_missing_cuts(self):              self._reject_without("cuts")
+    def test_missing_source_path(self):       self._reject_without("source", "path")
+    def test_missing_source_size_bytes(self): self._reject_without("source", "size_bytes")
+    def test_missing_source_mtime(self):      self._reject_without("source", "mtime_utc")
+    def test_missing_run_detector_id(self):   self._reject_without("run", "detector_id")
+    def test_missing_run_settings(self):      self._reject_without("run", "settings")
+    def test_missing_analysis_status(self):   self._reject_without("analysis", "status")
+    def test_missing_analysis_event_count(self): self._reject_without("analysis", "event_count")
+    def test_missing_analysis_warnings(self): self._reject_without("analysis", "warnings")
+
+
+class TestTypeHolesRejected(unittest.TestCase):
+    """S3-F2 gap 1: the type holes the audit named (bool-is-int, str-is-iterable, ...)."""
+    def _reject(self, mutate):
+        d = _base_doc(); mutate(d)
+        self.assertRaises(ExportValidationError, validate_document, d)
+
+    def test_fps_bool(self):        self._reject(lambda d: d.__setitem__("fps", True))
+    def test_fps_zero(self):        self._reject(lambda d: d.__setitem__("fps", 0))
+    def test_fps_negative(self):    self._reject(lambda d: d.__setitem__("fps", -1.0))
+    def test_fps_string(self):      self._reject(lambda d: d.__setitem__("fps", "24"))
+    def test_tool_dirty_int(self):  self._reject(lambda d: d["run"].__setitem__("tool_dirty", 1))
+    def test_warnings_string(self): self._reject(lambda d: d["analysis"].__setitem__("warnings", "oops"))
+    def test_warnings_nonstr(self): self._reject(lambda d: d["analysis"].__setitem__("warnings", [1, 2]))
+    def test_coverage_not_list(self):
+        self._reject(lambda d: d["analysis"].__setitem__("coverage", {"start": 0, "end": 1}))
+    def test_size_bytes_bool(self): self._reject(lambda d: d["source"].__setitem__("size_bytes", True))
+    def test_size_bytes_neg(self):  self._reject(lambda d: d["source"].__setitem__("size_bytes", -1))
+    def test_settings_not_dict(self): self._reject(lambda d: d["run"].__setitem__("settings", [1, 2]))
+    def test_event_count_bool(self): self._reject(lambda d: d["analysis"].__setitem__("event_count", True))
+    def test_event_count_wrong(self): self._reject(lambda d: d["analysis"].__setitem__("event_count", 99))
+    def test_duration_zero(self):   self._reject(lambda d: d["source"].__setitem__("duration_seconds", 0.0))
+    def test_backend_empty(self):   self._reject(lambda d: d["run"].__setitem__("backend", ""))
 
 
 if __name__ == "__main__":

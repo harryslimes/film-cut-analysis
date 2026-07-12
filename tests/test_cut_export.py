@@ -19,7 +19,7 @@ def _meta(**over):
     """Minimal source/run/analysis kwargs for build_document; override as needed."""
     kw = dict(
         source={"path": "D:\\Films\\movie.mkv", "size_bytes": 10, "mtime_utc": "2026-07-12T09:14:22Z"},
-        run={"detector_id": "torch", "backend": "cpu", "generated_by": "cut_times.py"},
+        run={"detector_id": "torch", "backend": "cpu", "settings": {}, "generated_by": "cut_times.py"},
         analysis={"status": "complete", "coverage": [{"start": 0.0, "end": 1000.0}], "warnings": []},
         fps=24.0, video="movie.mkv", detector="torch-gpu[cpu]",
     )
