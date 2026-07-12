@@ -16,7 +16,7 @@ import numpy as np
 import torch
 
 from .base import DetectResult, Timer, ffprobe_info
-from detector_events import build_transnet_events, gradual_span_frames
+from detector_events import build_transnet_events, gradual_span_frames, transnet_decode_extra
 
 _MODEL = None
 
@@ -76,16 +76,39 @@ def detect(video_path, method="cuda", threshold=0.4,
     cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", *pre, "-i", video_path,
            "-vf", vf, "-pix_fmt", "rgb24", "-f", "rawvideo", "-"]
 
-    model = _model()
+    # A2-2: transnet owns this decode subprocess, so a nonzero ffmpeg exit is reported
+    # honestly (decode_ok False + stderr tail) rather than crashing the CLI (was
+    # check=True). ffmpeg being absent still raises (FileNotFoundError) -- a genuinely
+    # unrunnable situation, not a partial result. The model is loaded only once we have
+    # frames to run it on.
+    FRAME_BYTES = 27 * 48 * 3            # one 48x27 rgb24 frame
+    decode_extra = {}
+    frames = None
     with Timer() as t:
-        raw = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True).stdout
-        frames = np.frombuffer(raw, np.uint8).reshape([-1, 27, 48, 3])
-        frames_t = torch.from_numpy(np.ascontiguousarray(frames)).to(model.device)
-        with torch.no_grad():
-            single, allf = model.predict_frames(frames_t, quiet=True)
-        preds = single.cpu().numpy().reshape(-1)
-        allp = allf.cpu().numpy().reshape(-1)
-        scenes = model.predictions_to_scenes(preds, threshold=threshold)
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        raw = proc.stdout or b""
+        n_full = len(raw) // FRAME_BYTES        # whole frames only (drop any torn tail)
+        if proc.returncode != 0:
+            decode_extra = transnet_decode_extra(
+                proc.returncode, (proc.stderr or b"").decode("utf-8", "replace"))
+        if n_full:
+            frames = np.frombuffer(raw[:n_full * FRAME_BYTES], np.uint8).reshape([-1, 27, 48, 3])
+            model = _model()
+            frames_t = torch.from_numpy(np.ascontiguousarray(frames)).to(model.device)
+            with torch.no_grad():
+                single, allf = model.predict_frames(frames_t, quiet=True)
+            preds = single.cpu().numpy().reshape(-1)
+            allp = allf.cpu().numpy().reshape(-1)
+            scenes = model.predictions_to_scenes(preds, threshold=threshold)
+
+    settings = {"method": method, "threshold": threshold, "gradual_height": gradual_height,
+                "min_gap_s": min_gap_s, "strobe_guard": strobe_guard}
+    if frames is None:
+        # nothing usable decoded -> honest empty result; the exporter downgrades status to
+        # 'failed' (no events) and surfaces decode_detail as a warning (A3.4).
+        return DetectResult(name=f"transnetv2[{method}]", events=[], elapsed=t.elapsed,
+                            n_frames=0, fps_source=fps, scores=[], settings=settings,
+                            extra=decode_extra)
 
     # sharp cuts: first frame of every scene after the first (high precision)
     sharp_frames = [int(s[0]) for s in scenes[1:]] if len(scenes) > 1 else []
@@ -117,7 +140,9 @@ def detect(video_path, method="cuda", threshold=0.4,
     return DetectResult(
         name=f"transnetv2[{method}]", events=events, elapsed=t.elapsed,
         n_frames=len(frames), fps_source=fps, scores=preds.tolist(),
-        settings={"method": method, "threshold": threshold, "gradual_height": gradual_height,
-                  "min_gap_s": min_gap_s, "strobe_guard": strobe_guard},
-        extra={"n_sharp": n_sharp, "n_gradual": n_gradual, "n_strobe_removed": n_strobe_removed},
+        settings=settings,
+        # decode_extra is {} on a clean exit; on a nonzero-but-usable decode it carries
+        # decode_ok=False so the exporter downgrades this run to 'partial' (A3.4).
+        extra={"n_sharp": n_sharp, "n_gradual": n_gradual,
+               "n_strobe_removed": n_strobe_removed, **decode_extra},
     )

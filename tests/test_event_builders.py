@@ -12,6 +12,7 @@ from cut_events import event_to_dict, validate_events  # noqa: E402
 from detector_events import (  # noqa: E402
     build_minimal_events, build_mv_events, build_torch_events,
     build_transnet_events, ffmpeg_decode_extra, gradual_span_frames,
+    transnet_decode_extra,
 )
 
 
@@ -127,6 +128,25 @@ class TestFfmpegDecodeExtra(unittest.TestCase):
         self.assertFalse(e["decode_ok"])
         self.assertIn("unusable", e["decode_detail"])       # no showinfo -> failed path
         self.assertIn("Invalid data", e["decode_detail"])   # stderr tail carried in detail
+
+
+class TestTransnetDecodeExtra(unittest.TestCase):
+    """Amendment 2 A2-2: transnet reports a failed/partial decode instead of raising."""
+    def test_clean_exit_no_diagnostics(self):
+        self.assertEqual(transnet_decode_extra(0, "anything on stderr"), {})
+
+    def test_nonzero_sets_decode_ok_false_with_stderr_tail(self):
+        # the real 10-bit blocker: hwdownload EINVAL. -22 as an ffmpeg exit is 4294967274.
+        e = transnet_decode_extra(4294967274,
+                                  "[hwdownload] Invalid output format nv12 for hwframe download.\n")
+        self.assertFalse(e["decode_ok"])
+        self.assertIn("exited 4294967274", e["decode_detail"])
+        self.assertIn("Invalid output format nv12", e["decode_detail"])   # stderr tail carried
+
+    def test_nonzero_empty_stderr_still_flags_failure(self):
+        e = transnet_decode_extra(1, "")
+        self.assertFalse(e["decode_ok"])
+        self.assertIn("exited 1", e["decode_detail"])
 
 
 if __name__ == "__main__":

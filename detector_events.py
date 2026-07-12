@@ -47,6 +47,22 @@ def ffmpeg_decode_extra(returncode, stderr):
     return {"decode_ok": False, "decode_detail": detail}
 
 
+def transnet_decode_extra(returncode, stderr):
+    """transnet owns its ffmpeg decode subprocess too (Amendment 2 A2-2): {} on a clean
+    exit; otherwise decode_ok False with a detail carrying the ffmpeg stderr tail. The
+    exporter (A3.4) turns decode_ok False into status 'failed' when no frames survived
+    (empty events) or 'partial' when some did. Dependency-light so BOTH branches run in
+    tests, not just review; transnet.detect calls this exact function rather than raising
+    on a nonzero exit (raising is reserved for ffmpeg being absent)."""
+    if returncode == 0:
+        return {}
+    detail = f"transnet decode (ffmpeg) exited {returncode}"
+    tail = (stderr or "").strip()
+    if tail:
+        detail += f"; stderr tail:\n{tail[-1500:]}"
+    return {"decode_ok": False, "decode_detail": detail}
+
+
 def build_torch_events(accepts, fps):
     """torch: accepts = [(i, spike), ...] in emission order (ascending i), where i is
     the score-array index of the accepted transition and spike is the native
