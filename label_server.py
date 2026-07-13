@@ -254,6 +254,8 @@ HOME_PAGE = r"""<!doctype html><html><head><meta charset=utf-8><title>Cut librar
  .card .sub{color:#888;font-size:12px;margin-bottom:8px}
  svg.diag{width:100%;aspect-ratio:1/1;height:auto;background:#101010;border-radius:6px;display:block}
  .diagref{stroke:#3d4a5c;stroke-width:1;stroke-dasharray:3 4}
+ .diaggrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin-top:10px}
+ .diagcell .celllab{font-size:10px;color:#7d8590;text-align:center;margin-top:2px}
  .row{display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap}
  button,select,input{background:#2a2a2a;color:#ddd;border:1px solid #444;border-radius:6px;padding:6px 9px;font:inherit}
  button{cursor:pointer} button:hover{background:#333} button:disabled{opacity:.5;cursor:default}
@@ -286,12 +288,8 @@ function fmtT(s){s=+s;const m=Math.floor(s/60),ss=s-60*m;return m>0?`${m}m${ss.t
 // Diagonal shot blocks: each shot is a square sized by its duration, tiled
 // corner-to-corner up the main diagonal. Colour = duration (validated blue
 // sequential ramp, dim=short → bright=long) on the dark surface.
-function diag(cuts,start,end,size){
-  size=size||240;
-  let cc=(cuts||[]).filter(t=>t>start&&t<end).slice().sort((a,b)=>a-b);
-  // drop the first and last 10 cuts: studio idents/opening and the end credits are long
-  // outlier "shots" that otherwise dominate the scale. Only when there's plenty left.
-  if(cc.length>25) cc=cc.slice(10,-10);
+// core: render one diagonal from an already-prepared, sorted list of cut boundaries `cc`.
+function diagSvg(cc,size){
   const durs=[];for(let i=0;i<cc.length-1;i++)durs.push(cc[i+1]-cc[i]);
   const T=durs.reduce((a,b)=>a+b,0);
   if(!(T>0)||!durs.length) return `<svg viewBox="0 0 ${size} ${size}" class="diag"></svg>`;
@@ -307,6 +305,30 @@ function diag(cuts,start,end,size){
   }
   return `<svg viewBox="0 0 ${size} ${size}" class="diag">
     <line x1="0" y1="${size}" x2="${size}" y2="0" class="diagref"></line>${rects}</svg>`;
+}
+// prep: interior cuts sorted, first/last 10 dropped (opening idents / end credits).
+function diagCuts(cuts,start,end){
+  let cc=(cuts||[]).filter(t=>t>start&&t<end).slice().sort((a,b)=>a-b);
+  if(cc.length>25) cc=cc.slice(10,-10);
+  return cc;
+}
+// small single diagonal (movie cards, at-a-glance)
+function diag(cuts,start,end,size){ return diagSvg(diagCuts(cuts,start,end), size||240); }
+// big view: split the film into square panels (~200 shots each) read left→right, top→bottom
+// so each shot gets far more room than one collapsed diagonal.
+function diagPanels(cuts,start,end){
+  const cc=diagCuts(cuts,start,end);
+  const nShots=cc.length-1;
+  if(nShots<40) return `<div class=biglabel>${diagSvg(cc,300)}</div>`;
+  const panels=Math.max(2,Math.min(20,Math.round(nShots/200)));
+  const per=Math.ceil(nShots/panels);
+  let cells='';
+  for(let p=0;p<panels;p++){
+    const a=p*per, seg=cc.slice(a, Math.min(cc.length, a+per+1));  // +1 shares the boundary cut
+    if(seg.length<2) continue;
+    cells+=`<div class=diagcell>${diagSvg(seg,180)}<div class=celllab>${fmtT(seg[0])}–${fmtT(seg[seg.length-1])}</div></div>`;
+  }
+  return `<div class=diaggrid>${cells}</div>`;
 }
 function fixBadge(f){
   return f.labelled?'<span class="badge b-done">labelled</span>'
@@ -352,7 +374,8 @@ async function renderMovie(video){
 
   if(m.processed){
     html+=`<div class=box style="margin-top:12px"><div class=sub>End result — base run (${esc(m.base_source)}) with saved fixes applied · ${m.n_cuts} cuts · ${fmtT(m.end)}</div>
-      <div class=biglabel>${diag(m.cuts,m.start,m.end,300)}</div></div>`;
+      <div class=muted style="margin-top:4px">shot lengths as squares along each diagonal; panels run in order (first/last 10 cuts trimmed)</div>
+      ${diagPanels(m.cuts,m.start,m.end)}</div>`;
     html+=`<div class=box style="margin-top:12px">
       <div style="font-weight:600;margin-bottom:6px">Least-confident cuts</div>
       <div class=muted>The base run's weakest detections across the whole film — most likely to be wrong.
