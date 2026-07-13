@@ -378,10 +378,13 @@ async function renderMovie(video){
       ${diagPanels(m.cuts,m.start,m.end)}</div>`;
     html+=`<div class=box style="margin-top:12px">
       <div style="font-weight:600;margin-bottom:6px">Least-confident cuts</div>
-      <div class=muted>The base run's weakest detections across the whole film — most likely to be wrong.
-        Review the bottom <input id=weakpct type=number value=5 min=0.1 max=100 step=0.1 style="width:64px"> %
-        and click any to jump to it for a scene fix.</div>
-      <div class=row><button onclick="loadWeak()">Show weakest</button></div>
+      <div class=muted>Drag to choose how many of the shakiest cuts to review — the confidence you're
+        going down to updates as you drag. Click any to jump to it for a fix.</div>
+      <div id=weakbands class=muted style="margin-top:6px">loading…</div>
+      <div class=row style="margin-top:6px">
+        <input type=range id=weakn min=0 max=0 value=0 style="flex:1;min-width:220px" oninput="weakSlide()">
+        <span id=weaklabel class=muted style="min-width:250px"></span>
+      </div>
       <div id=weaklist style="margin-top:8px;max-height:340px;overflow:auto"></div>
     </div>`;
   } else {
@@ -409,19 +412,30 @@ async function renderMovie(video){
   app.innerHTML=html;
   renderFixes(m);
   setupTimeline(m);
+  if(m.processed) loadWeak();
 }
 
 async function loadWeak(){
-  const m=window._movie, pct=parseFloat(document.getElementById('weakpct').value)||5;
-  const el=document.getElementById('weaklist'); el.innerHTML='<div class=muted>loading…</div>';
-  const j=await (await fetch('/api/weak?v='+encodeURIComponent(m.video)+'&pct='+pct)).json();
-  if(!j.total){ el.innerHTML='<div class=muted>No per-cut confidence for this base run (only detector runs carry it, not imported canonicals).</div>'; return; }
-  const lo=j.weak[0].conf, hi=j.weak[j.weak.length-1].conf;
-  el.innerHTML=`<div class=muted style="margin-bottom:6px">${j.weak.length} weakest of ${j.total} cuts · conf ${lo}–${hi}</div>`+
-    j.weak.map(w=>`<div class=fixrow>
-      <div class=fn>${fmtTC(w.time)}</div>
-      <div class=sub style="margin:0"><span class="badge ${w.kind==='gradual'?'b-prog':'b-todo'}">${w.kind}</span> conf ${w.conf}</div>
-      <button onclick="reviewCut(${w.time})">review →</button></div>`).join('');
+  const m=window._movie;
+  const bands=document.getElementById('weakbands');
+  const j=await (await fetch('/api/weak?v='+encodeURIComponent(m.video))).json();
+  if(!j.total){ bands.textContent='No per-cut confidence for this base run (only detector runs carry it, not imported canonicals).'; return; }
+  window._weak=j.review; const b=j.bands;
+  bands.innerHTML=`of ${j.total} cuts — <b style="color:#e0a">&lt;0.4:</b> ${b.lt04} · <b style="color:#f0d79a">0.4–0.6:</b> ${b.b0406} · <b>0.6–0.8:</b> ${b.b0608} · <b style="color:#bfe6cd">≥0.8:</b> ${b.gte08} (solid)`;
+  const sl=document.getElementById('weakn');
+  sl.max=j.review.length;
+  sl.value=j.review.filter(r=>r.conf<0.5).length;   // default: everything below 0.5
+  weakSlide();
+}
+function weakSlide(){
+  const w=window._weak||[], n=+document.getElementById('weakn').value;
+  const sub=w.slice(0,n), floor=n>0?w[n-1].conf:null;
+  document.getElementById('weaklabel').textContent =
+    n>0 ? `reviewing ${n} weakest — down to conf ${floor}` : 'none selected — drag right';
+  document.getElementById('weaklist').innerHTML=sub.map(x=>`<div class=fixrow>
+    <div class=fn>${fmtTC(x.time)}</div>
+    <div class=sub style="margin:0"><span class="badge ${x.kind==='gradual'?'b-prog':'b-todo'}">${x.kind}</span> conf ${x.conf}</div>
+    <button onclick="reviewCut(${x.time})">review →</button></div>`).join('');
 }
 function reviewCut(t){
   window._sel={start:Math.max(0,t-8), end:t+8};
@@ -730,20 +744,24 @@ def _base_events(video):
     return []
 
 
-def _weak_cuts(video, pct):
-    """The least-confident pct% of the base run's cuts (lowest confidence first) -- the
-    ones most worth reviewing. Ranked by each event's native confidence value."""
+def _weak_cuts(video, ceiling=0.85):
+    """The base run's cuts ranked weakest-first, plus confidence-band counts. `review` is
+    the tail below `ceiling` (cuts above that are solid and not worth reviewing) -- the
+    slider in the UI walks down this list."""
     rows = []
     for e in _base_events(video):
         c = e.get("confidence") or {}
-        if c.get("value") is None:
+        v = c.get("value")
+        if v is None:
             continue
-        rows.append({"time": e["time"], "conf": round(c["value"], 3),
-                     "kind": e.get("transition_kind"), "metric": c.get("metric")})
+        rows.append({"time": e["time"], "conf": round(v, 3), "kind": e.get("transition_kind")})
     rows.sort(key=lambda r: r["conf"])
-    pct = min(100.0, max(0.1, pct))
-    n = max(1, round(len(rows) * pct / 100)) if rows else 0
-    return {"total": len(rows), "pct": pct, "weak": rows[:n]}
+    bands = {"lt04": sum(1 for r in rows if r["conf"] < 0.4),
+             "b0406": sum(1 for r in rows if 0.4 <= r["conf"] < 0.6),
+             "b0608": sum(1 for r in rows if 0.6 <= r["conf"] < 0.8),
+             "gte08": sum(1 for r in rows if r["conf"] >= 0.8)}
+    return {"total": len(rows), "ceiling": ceiling, "bands": bands,
+            "review": [r for r in rows if r["conf"] < ceiling]}
 
 
 def _movie_fixes(video):
@@ -950,11 +968,7 @@ class H(BaseHTTPRequestHandler):
             v = qs.get("v", [None])[0]
             if not (v and os.path.isfile(v)):
                 return self._json(404, {"error": "unknown movie"})
-            try:
-                pct = float(qs.get("pct", ["5"])[0])
-            except ValueError:
-                pct = 5.0
-            return self._json(200, _weak_cuts(v, pct))
+            return self._json(200, _weak_cuts(v))
         if p == "/api/prep_status":
             try:
                 jid = int(qs["job"][0])
