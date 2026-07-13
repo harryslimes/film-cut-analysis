@@ -277,6 +277,17 @@ HOME_PAGE = r"""<!doctype html><html><head><meta charset=utf-8><title>Cut librar
  .muted{color:#777;font-size:13px}
  .fixrow{display:flex;gap:10px;align-items:center;border:1px solid #2c2c2c;border-radius:8px;padding:8px 10px;margin:6px 0;background:#181818}
  .fixrow .fn{flex:1;font-weight:600} .biglabel{max-width:520px;margin:10px auto 0}
+ .tabs{display:inline-flex;border:1px solid #444;border-radius:6px;overflow:hidden}
+ .tabs button{border:none;border-radius:0;background:#222;color:#999;font-size:12px;padding:5px 12px}
+ .tabs button.on{background:#2f4a6b;color:#dce9f8}
+ .clus{border:1px solid #2c2c2c;border-radius:8px;background:#181818;margin:6px 0;padding:8px 10px}
+ .clus.settled{opacity:.62}
+ .crow{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+ .crank{color:#777;min-width:24px;text-align:right;font-size:12px}
+ .crow .fn{font-weight:600;font-size:14px}
+ .cmem{margin:6px 0 0 34px}
+ .cstrip{position:relative;height:14px;flex:0 0 120px;background:#101010;border:1px solid #2a2a2a;border-radius:4px;overflow:hidden}
+ .cstrip i{position:absolute;top:2px;bottom:2px;width:2px;border-radius:1px}
  .tl{position:relative;height:46px;background:#101010;border:1px solid #333;border-radius:6px;margin:12px 0;cursor:crosshair;user-select:none;touch-action:none;overflow:hidden}
  .tl .tick{position:absolute;top:8px;bottom:8px;width:1px;background:#3987e5;opacity:.4}
  .tl .sel{position:absolute;top:0;bottom:0;background:rgba(127,176,232,.22);border-left:2px solid #7fb0e8;border-right:2px solid #7fb0e8;pointer-events:none}
@@ -378,19 +389,38 @@ async function renderMovie(video){
     <div class=sub>${esc(m.slug)}</div>`;
 
   if(m.processed){
-    html+=`<div class=box style="margin-top:12px"><div class=sub>End result — base run (${esc(m.base_source)}) with saved fixes applied · ${m.n_cuts} cuts · ${fmtT(m.end)}</div>
+    window._ncuts=m.n_cuts;
+    html+=`<div class=box style="margin-top:12px"><div class=sub>End result — base run (${esc(m.base_source)}) with saved fixes applied · <span id=ncuts>${m.n_cuts}</span> cuts · ${fmtT(m.end)}</div>
       <div class=muted style="margin-top:4px">shot lengths as squares along each diagonal; panels run in order (first/last 10 cuts trimmed)</div>
       ${diagPanels(m.cuts,m.start,m.end)}</div>`;
     html+=`<div class=box style="margin-top:12px">
-      <div style="font-weight:600;margin-bottom:6px">Least-confident cuts</div>
-      <div class=muted>Drag to choose how many of the shakiest cuts to review — the confidence you're
-        going down to updates as you drag. Click any to jump to it for a fix.</div>
-      <div id=weakbands class=muted style="margin-top:6px">loading…</div>
-      <div class=row style="margin-top:6px">
-        <input type=range id=weakn min=0 max=0 value=0 style="flex:1;min-width:220px" oninput="weakSlide()">
-        <span id=weaklabel class=muted style="min-width:250px"></span>
+      <div style="display:flex;gap:10px;align-items:center;margin-bottom:6px;flex-wrap:wrap">
+        <div style="font-weight:600">Least-confident cuts</div><span class=sp></span>
+        <div class=tabs><button id=tab_list class=on onclick="showTab('list')">List</button><button id=tab_clusters onclick="showTab('clusters')">Clusters</button></div>
       </div>
-      <div id=weaklist style="margin-top:8px;max-height:340px;overflow:auto"></div>
+      <div id=panel_list>
+        <div class=muted>Drag to choose how many of the shakiest cuts to review — the confidence you're
+          going down to updates as you drag. Click any to jump to it for a fix.</div>
+        <div id=weakbands class=muted style="margin-top:6px">loading…</div>
+        <div class=row style="margin-top:6px">
+          <input type=range id=weakn min=0 max=0 value=0 style="flex:1;min-width:220px" oninput="weakSlide()">
+          <span id=weaklabel class=muted style="min-width:250px"></span>
+        </div>
+        <div id=weaklist style="margin-top:8px;max-height:340px;overflow:auto"></div>
+      </div>
+      <div id=panel_clusters style="display:none">
+        <div class=muted>Bursts of weak cuts packed close in time — usually a flashing/strobing scene shedding
+          dozens of false cuts at once. Biggest cleanups first: one click accepts or rejects a whole burst;
+          expand a cluster to override single cuts.</div>
+        <div class=row style="margin-top:6px">
+          <label class=muted>conf below <select id=cconf onchange="loadClusters()">
+            <option>0.4</option><option>0.5</option><option selected>0.6</option><option>0.7</option><option>0.85</option></select></label>
+          <label class=muted>max gap <select id=cgap onchange="loadClusters()">
+            <option>0.75</option><option>1</option><option selected>1.5</option><option>2.5</option><option>4</option></select> s</label>
+          <span id=cinfo class=muted></span>
+        </div>
+        <div id=clusterlist style="margin-top:8px;max-height:520px;overflow:auto"></div>
+      </div>
     </div>`;
   } else {
     html+=`<div class=box style="margin-top:12px"><div class=sub>This movie has no base run yet. Processing runs whole-film detection (TransNetV2) — this can take a while for a full film.</div>
@@ -417,7 +447,14 @@ async function renderMovie(video){
   app.innerHTML=html;
   renderFixes(m);
   setupTimeline(m);
-  if(m.processed) loadWeak();
+  if(m.processed){ loadWeak(); loadClusters(); if(location.hash==='#clusters') showTab('clusters'); }
+}
+function showTab(which){
+  document.getElementById('panel_list').style.display = which==='list'?'':'none';
+  document.getElementById('panel_clusters').style.display = which==='clusters'?'':'none';
+  document.getElementById('tab_list').classList.toggle('on', which==='list');
+  document.getElementById('tab_clusters').classList.toggle('on', which==='clusters');
+  history.replaceState(null,'','/?v='+encodeURIComponent(window._movie.video)+(which==='clusters'?'#clusters':''));
 }
 
 async function loadWeak(){
@@ -432,39 +469,121 @@ async function loadWeak(){
   sl.value=j.review.filter(r=>r.conf<0.5).length;   // default: everything below 0.5
   weakSlide();
 }
-function weakSlide(){
-  const w=window._weak||[], n=+document.getElementById('weakn').value;
-  const sub=w.slice(0,n), floor=n>0?w[n-1].conf:null;
-  document.getElementById('weaklabel').textContent =
-    n>0 ? `reviewing ${n} weakest — down to conf ${floor}` : 'none selected — drag right';
-  document.getElementById('weaklist').innerHTML=sub.map(x=>`<div class=fixrow>
+function cutRow(x){ return `<div class=fixrow>
     <div class=fn>${fmtTC(x.time)}</div>
     <div class=sub style="margin:0;flex:1"><span class="badge ${x.kind==='gradual'?'b-prog':'b-todo'}">${x.kind}</span> conf ${x.conf}</div>
     <button onclick="watchCut(${x.time})">▶ watch</button>
     <button class="gbtn gacc ${x.gold==='accept'?'on':''}" onclick="setGold(${x.time},'accept')" title="gold: real cut">✓ accept</button>
     <button class="gbtn grej ${x.gold==='reject'?'on':''}" onclick="setGold(${x.time},'reject')" title="gold: not a cut">✗ reject</button>
-    <button onclick="reviewCut(${x.time})">fix →</button></div>`).join('');
+    <button onclick="reviewCut(${x.time})">fix →</button></div>`;
+}
+function weakSlide(){
+  const w=window._weak||[], n=+document.getElementById('weakn').value;
+  const sub=w.slice(0,n), floor=n>0?w[n-1].conf:null;
+  document.getElementById('weaklabel').textContent =
+    n>0 ? `reviewing ${n} weakest — down to conf ${floor}` : 'none selected — drag right';
+  document.getElementById('weaklist').innerHTML=sub.map(cutRow).join('');
+}
+function bumpNcuts(d){   // arithmetic live update; server recomputes exactly on reload
+  if(!d) return; window._ncuts=(window._ncuts||0)+d;
+  const el=document.getElementById('ncuts'); if(el) el.textContent=window._ncuts;
+}
+function findClusterCut(t){
+  for(const c of (window._clusters||[])){ const x=c.members.find(y=>y.time===t); if(x) return x; }
+  return null;
 }
 async function setGold(t, decision){
-  const m=window._movie, row=(window._weak||[]).find(r=>r.time===t);
-  const dec=(row && row.gold===decision) ? 'clear' : decision;   // click again to un-set
+  const m=window._movie, row=(window._weak||[]).find(r=>r.time===t), cm=findClusterCut(t);
+  const cur=row?row.gold:(cm?cm.gold:null);
+  const dec=(cur===decision) ? 'clear' : decision;   // click again to un-set
   await fetch('/api/gold',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({video:m.video, time:t, decision:dec})});
-  if(row) row.gold = dec==='clear' ? null : dec;
-  weakSlide();
+  const g = dec==='clear' ? null : dec;
+  if(row) row.gold=g; if(cm) cm.gold=g;
+  bumpNcuts((cur==='reject'?1:0)-(g==='reject'?1:0));   // rejects drop cuts from the end result
+  weakSlide(); renderClusterList();
 }
-function watchCut(t){
-  const m=window._movie, pre=5, post=8;
-  const q='v='+encodeURIComponent(m.video)+'&t='+t+'&pre='+pre+'&post='+post;
+function watchCut(t){ openClip(t, 5, 8, '@'+fmtTC(t), 'subtitle shot index bumps at the cut'); }
+function openClip(t, pre, post, label, note){
+  const m=window._movie;
+  const q='v='+encodeURIComponent(m.video)+'&t='+t+'&pre='+pre.toFixed(2)+'&post='+post.toFixed(2);
   let ov=document.getElementById('player');
   if(!ov){ ov=document.createElement('div'); ov.id='player'; ov.className='overlay';
     ov.addEventListener('click',e=>{ if(e.target===ov) closePlayer(); }); document.body.appendChild(ov); }
   ov.innerHTML=`<div class=pbox onclick="event.stopPropagation()">
-    <div class=prow><b>@${fmtTC(t)}</b><span class=muted>subtitle shot index bumps at the cut</span><span class=sp></span><button onclick="closePlayer()">close ✕</button></div>
+    <div class=prow><b>${label}</b><span class=muted>${note}</span><span class=sp></span><button onclick="closePlayer()">close ✕</button></div>
     <video controls autoplay muted playsinline style="width:100%;max-height:70vh;background:#000">
       <source src="/clip?${q}" type="video/mp4"><track default kind=subtitles srclang=en src="/clipvtt?${q}"></video>
-    <div class=muted style="margin-top:6px">Transcoding a ~13s clip (${pre}s before → ${post}s after). Muted autoplay — unmute in the controls.</div></div>`;
+    <div class=muted style="margin-top:6px">Transcoding a ~${Math.round(pre+post)}s clip (${pre.toFixed(1)}s before → ${post.toFixed(1)}s after). Muted autoplay — unmute in the controls.</div></div>`;
   ov.style.display='flex';
+}
+
+// ---- clusters view ----
+async function loadClusters(){
+  const m=window._movie, el=document.getElementById('clusterlist');
+  if(!el) return;
+  const conf=document.getElementById('cconf').value, gap=document.getElementById('cgap').value;
+  el.innerHTML='<div class=muted>loading…</div>';
+  const j=await (await fetch('/api/clusters?v='+encodeURIComponent(m.video)+'&conf='+conf+'&gap='+gap)).json();
+  window._clusters=j.clusters||[]; window._copen=new Set();
+  document.getElementById('tab_clusters').textContent='Clusters ('+window._clusters.length+')';
+  const info=document.getElementById('cinfo');
+  if(!j.total_low && !j.clusters.length){
+    info.textContent='';
+    el.innerHTML='<div class=muted>No low-confidence cuts to cluster (imported canonicals carry no per-cut confidence).</div>';
+    return;
+  }
+  info.textContent=`${j.n_clustered} of ${j.total_low} weak cuts fall in ${j.clusters.length} cluster${j.clusters.length===1?'':'s'} (${j.n_single} singles → List view)`;
+  renderClusterList();
+}
+function renderClusterList(){
+  const cs=window._clusters||[], el=document.getElementById('clusterlist');
+  if(!el) return;
+  el.innerHTML = cs.length ? cs.map(clusterCard).join('')
+    : '<div class=muted>No bursts of ≥3 weak cuts within the gap at these settings — loosen conf/gap, or review singles in the List view.</div>';
+}
+function clusterCard(c,i){
+  const nR=c.members.filter(x=>x.gold==='reject').length, nA=c.members.filter(x=>x.gold==='accept').length;
+  const allR=nR===c.count, allA=nA===c.count, open=window._copen.has(i);
+  const state = allR ? '<span class="badge b-none">✗ all rejected</span>'
+    : allA ? '<span class="badge b-done">✓ all accepted</span>'
+    : (nR||nA) ? `<span class="badge b-prog">${nA}✓ · ${nR}✗ of ${c.count}</span>` : '';
+  const strip=c.members.map(x=>{
+    const L=c.span>0 ? ((x.time-c.start)/c.span*94+2) : 50;
+    const col=x.gold==='reject' ? '#c66' : x.gold==='accept' ? '#3c9' : '#d99c3f';
+    return `<i style="left:${L.toFixed(1)}%;background:${col}"></i>`;
+  }).join('');
+  return `<div class="clus ${(allR||allA)?'settled':''}">
+    <div class=crow>
+      <div class=crank>#${i+1}</div>
+      <div style="min-width:150px"><div class=fn>${c.count} cuts in ${c.span.toFixed(1)}s</div>
+        <div class=sub style="margin:0">${fmtTC(c.start)}–${fmtTC(c.end)} · conf ${c.conf_min.toFixed(2)}–${c.conf_max.toFixed(2)}</div></div>
+      <div class=cstrip title="cut positions across the burst (amber=undecided, red=rejected, green=accepted)">${strip}</div>
+      ${state}<span class=sp></span>
+      <button onclick="watchCluster(${i})">▶ watch burst</button>
+      <button class="gbtn gacc ${allA?'on':''}" onclick="goldCluster(${i},'accept')" title="gold: every cut in this burst is real${allA?' (click again to clear)':''}">✓ accept all</button>
+      <button class="gbtn grej ${allR?'on':''}" onclick="goldCluster(${i},'reject')" title="gold: every cut in this burst is false${allR?' (click again to clear)':''}">✗ reject all</button>
+      <button onclick="togCluster(${i})">${open?'▾ hide':'▸ cuts'}</button>
+    </div>
+    ${open?`<div class=cmem>${c.members.map(cutRow).join('')}</div>`:''}
+  </div>`;
+}
+function togCluster(i){ window._copen.has(i)?window._copen.delete(i):window._copen.add(i); renderClusterList(); }
+async function goldCluster(i, decision){
+  const m=window._movie, c=window._clusters[i];
+  const dec=c.members.every(x=>x.gold===decision) ? 'clear' : decision;   // re-click undoes
+  await fetch('/api/gold_batch',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({video:m.video, times:c.members.map(x=>x.time), decision:dec})});
+  const before=c.members.filter(x=>x.gold==='reject').length;
+  const g = dec==='clear' ? null : dec;
+  c.members.forEach(x=>{ x.gold=g; const r=(window._weak||[]).find(y=>y.time===x.time); if(r) r.gold=g; });
+  bumpNcuts(before - c.members.filter(x=>x.gold==='reject').length);
+  renderClusterList(); weakSlide();
+}
+function watchCluster(i){
+  const c=window._clusters[i], mid=(c.start+c.end)/2, pad=2.5;
+  openClip(mid, Math.min(30, mid-c.start+pad), Math.min(60, c.end-mid+pad),
+    `${c.count}-cut burst · ${fmtTC(c.start)}–${fmtTC(c.end)}`, 'subtitle shot index bumps at every detected cut');
 }
 function closePlayer(){ const ov=document.getElementById('player'); if(ov){ ov.style.display='none'; ov.innerHTML=''; } }
 function reviewCut(t){
@@ -797,6 +916,46 @@ def _weak_cuts(video, ceiling=0.85):
             "review": [r for r in rows if r["conf"] < ceiling]}
 
 
+def _cut_clusters(video, conf_max=0.6, gap=1.5, min_size=3):
+    """Low-confidence cuts grouped into time-dense bursts. Flash/strobe scenes (and shaky
+    gradual regions) shed runs of weak detections packed close together -- the same
+    pathologically-dense regions postfilter.dampen_strobe targets. A cluster is a maximal
+    run of cuts with conf < conf_max where consecutive members are <= gap seconds apart
+    and the run has >= min_size members; shorter runs stay singletons for the List view.
+    Ranked by impact: most members first (biggest one-click cleanup), then weakest mean
+    confidence, then earliest."""
+    low = []
+    for e in _base_events(video):
+        v = (e.get("confidence") or {}).get("value")
+        if v is not None and v < conf_max:
+            low.append({"time": e["time"], "conf": round(v, 3),
+                        "kind": e.get("transition_kind")})
+    low.sort(key=lambda r: r["time"])
+    st = _gold_state(video)
+    for r in low:
+        r["gold"] = st.get(round(r["time"], 3))
+    runs, run = [], []
+    for r in low:
+        if run and r["time"] - run[-1]["time"] > gap:
+            runs.append(run); run = []
+        run.append(r)
+    if run:
+        runs.append(run)
+    clusters = []
+    for mem in runs:
+        if len(mem) < min_size:
+            continue
+        confs = [m["conf"] for m in mem]
+        clusters.append({"start": mem[0]["time"], "end": mem[-1]["time"],
+                         "span": round(mem[-1]["time"] - mem[0]["time"], 3),
+                         "count": len(mem), "conf_min": min(confs), "conf_max": max(confs),
+                         "conf_mean": round(sum(confs) / len(confs), 3), "members": mem})
+    clusters.sort(key=lambda c: (-c["count"], c["conf_mean"], c["start"]))
+    n_in = sum(c["count"] for c in clusters)
+    return {"total_low": len(low), "conf_max": conf_max, "gap": gap, "min_size": min_size,
+            "n_clustered": n_in, "n_single": len(low) - n_in, "clusters": clusters}
+
+
 GOLD_ROOT = os.path.join("results", "gold")
 
 
@@ -816,17 +975,23 @@ def _load_gold(video):
     return {"accept": [], "reject": []}
 
 
-def _set_gold(video, time, decision):
-    """Record accept / reject / clear for one cut time; a time carries at most one verdict."""
+def _set_gold_batch(video, times, decision):
+    """Record accept / reject / clear for many cut times in one read+write of the gold
+    file (a time carries at most one verdict). Same file format as single verdicts."""
     g = _load_gold(video)
-    key = round(float(time), 3)
-    g["accept"] = [t for t in g["accept"] if round(t, 3) != key]
-    g["reject"] = [t for t in g["reject"] if round(t, 3) != key]
+    keys = {round(float(t), 3) for t in times}
+    g["accept"] = [t for t in g["accept"] if round(t, 3) not in keys]
+    g["reject"] = [t for t in g["reject"] if round(t, 3) not in keys]
     if decision in ("accept", "reject"):
-        g[decision].append(float(time))
+        g[decision].extend(float(t) for t in times)
     os.makedirs(GOLD_ROOT, exist_ok=True)
     json.dump(g, open(_gold_path(video), "w"), indent=1)
     return g
+
+
+def _set_gold(video, time, decision):
+    """Record accept / reject / clear for one cut time."""
+    return _set_gold_batch(video, [time], decision)
 
 
 def _gold_state(video):
@@ -1067,6 +1232,17 @@ class H(BaseHTTPRequestHandler):
             if not (v and os.path.isfile(v)):
                 return self._json(404, {"error": "unknown movie"})
             return self._json(200, _weak_cuts(v))
+        if p == "/api/clusters":
+            v = qs.get("v", [None])[0]
+            if not (v and os.path.isfile(v)):
+                return self._json(404, {"error": "unknown movie"})
+            try:
+                conf = float(qs.get("conf", ["0.6"])[0])
+                gap = float(qs.get("gap", ["1.5"])[0])
+                msz = max(2, int(qs.get("min", ["3"])[0]))
+            except ValueError:
+                return self._json(400, {"error": "bad params"})
+            return self._json(200, _cut_clusters(v, conf, gap, msz))
         if p == "/clipvtt":
             v = qs.get("v", [None])[0]
             if not (v and os.path.isfile(v)):
@@ -1209,6 +1385,21 @@ class H(BaseHTTPRequestHandler):
             except (KeyError, ValueError, TypeError):
                 return self._json(400, {"error": "bad time"})
             g = _set_gold(v, t, data.get("decision"))
+            return self._json(200, {"accept": len(g["accept"]), "reject": len(g["reject"])})
+
+        if p == "/api/gold_batch":
+            n = int(self.headers.get("Content-Length", 0))
+            data = json.loads(self.rfile.read(n)) if n else {}
+            v = data.get("video")
+            if not (v and os.path.isfile(v)):
+                return self._json(404, {"error": "unknown movie"})
+            try:
+                times = [float(t) for t in data["times"]]
+            except (KeyError, ValueError, TypeError):
+                return self._json(400, {"error": "bad times"})
+            if not times:
+                return self._json(400, {"error": "empty times"})
+            g = _set_gold_batch(v, times, data.get("decision"))
             return self._json(200, {"accept": len(g["accept"]), "reject": len(g["reject"])})
 
         d = _session_dir(qs.get("s", [None])[0])
