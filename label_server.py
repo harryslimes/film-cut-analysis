@@ -256,6 +256,11 @@ HOME_PAGE = r"""<!doctype html><html><head><meta charset=utf-8><title>Cut librar
  .diagref{stroke:#3d4a5c;stroke-width:1;stroke-dasharray:3 4}
  .diaggrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin-top:10px}
  .diagcell .celllab{font-size:10px;color:#7d8590;text-align:center;margin-top:2px}
+ .gbtn{font-size:12px;padding:5px 8px} .gbtn.on.gacc{background:#1f6f3f;border-color:#2c9;color:#eafff2}
+ .gbtn.on.grej{background:#7a2d29;border-color:#c66;color:#ffe6e3}
+ .overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:50;align-items:center;justify-content:center;padding:20px}
+ .pbox{background:#1b1b1b;border:1px solid #333;border-radius:10px;padding:14px;max-width:900px;width:100%}
+ .prow{display:flex;gap:10px;align-items:center;margin-bottom:8px}
  .row{display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap}
  button,select,input{background:#2a2a2a;color:#ddd;border:1px solid #444;border-radius:6px;padding:6px 9px;font:inherit}
  button{cursor:pointer} button:hover{background:#333} button:disabled{opacity:.5;cursor:default}
@@ -434,9 +439,34 @@ function weakSlide(){
     n>0 ? `reviewing ${n} weakest — down to conf ${floor}` : 'none selected — drag right';
   document.getElementById('weaklist').innerHTML=sub.map(x=>`<div class=fixrow>
     <div class=fn>${fmtTC(x.time)}</div>
-    <div class=sub style="margin:0"><span class="badge ${x.kind==='gradual'?'b-prog':'b-todo'}">${x.kind}</span> conf ${x.conf}</div>
-    <button onclick="reviewCut(${x.time})">review →</button></div>`).join('');
+    <div class=sub style="margin:0;flex:1"><span class="badge ${x.kind==='gradual'?'b-prog':'b-todo'}">${x.kind}</span> conf ${x.conf}</div>
+    <button onclick="watchCut(${x.time})">▶ watch</button>
+    <button class="gbtn gacc ${x.gold==='accept'?'on':''}" onclick="setGold(${x.time},'accept')" title="gold: real cut">✓ accept</button>
+    <button class="gbtn grej ${x.gold==='reject'?'on':''}" onclick="setGold(${x.time},'reject')" title="gold: not a cut">✗ reject</button>
+    <button onclick="reviewCut(${x.time})">fix →</button></div>`).join('');
 }
+async function setGold(t, decision){
+  const m=window._movie, row=(window._weak||[]).find(r=>r.time===t);
+  const dec=(row && row.gold===decision) ? 'clear' : decision;   // click again to un-set
+  await fetch('/api/gold',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({video:m.video, time:t, decision:dec})});
+  if(row) row.gold = dec==='clear' ? null : dec;
+  weakSlide();
+}
+function watchCut(t){
+  const m=window._movie, pre=5, post=8;
+  const q='v='+encodeURIComponent(m.video)+'&t='+t+'&pre='+pre+'&post='+post;
+  let ov=document.getElementById('player');
+  if(!ov){ ov=document.createElement('div'); ov.id='player'; ov.className='overlay';
+    ov.addEventListener('click',e=>{ if(e.target===ov) closePlayer(); }); document.body.appendChild(ov); }
+  ov.innerHTML=`<div class=pbox onclick="event.stopPropagation()">
+    <div class=prow><b>@${fmtTC(t)}</b><span class=muted>subtitle shot index bumps at the cut</span><span class=sp></span><button onclick="closePlayer()">close ✕</button></div>
+    <video controls autoplay muted playsinline style="width:100%;max-height:70vh;background:#000">
+      <source src="/clip?${q}" type="video/mp4"><track default kind=subtitles srclang=en src="/clipvtt?${q}"></video>
+    <div class=muted style="margin-top:6px">Transcoding a ~13s clip (${pre}s before → ${post}s after). Muted autoplay — unmute in the controls.</div></div>`;
+  ov.style.display='flex';
+}
+function closePlayer(){ const ov=document.getElementById('player'); if(ov){ ov.style.display='none'; ov.innerHTML=''; } }
 function reviewCut(t){
   window._sel={start:Math.max(0,t-8), end:t+8};
   if(document.getElementById('tlsel')) paintSel();
@@ -756,12 +786,75 @@ def _weak_cuts(video, ceiling=0.85):
             continue
         rows.append({"time": e["time"], "conf": round(v, 3), "kind": e.get("transition_kind")})
     rows.sort(key=lambda r: r["conf"])
+    st = _gold_state(video)
+    for r in rows:
+        r["gold"] = st.get(round(r["time"], 3))
     bands = {"lt04": sum(1 for r in rows if r["conf"] < 0.4),
              "b0406": sum(1 for r in rows if 0.4 <= r["conf"] < 0.6),
              "b0608": sum(1 for r in rows if 0.6 <= r["conf"] < 0.8),
              "gte08": sum(1 for r in rows if r["conf"] >= 0.8)}
     return {"total": len(rows), "ceiling": ceiling, "bands": bands,
             "review": [r for r in rows if r["conf"] < ceiling]}
+
+
+GOLD_ROOT = os.path.join("results", "gold")
+
+
+def _gold_path(video):
+    return os.path.join(GOLD_ROOT, _movie_slug(video) + ".json")
+
+
+def _load_gold(video):
+    """Per-movie human verdicts on individual base-run cuts: {accept:[t], reject:[t]}."""
+    fp = _gold_path(video)
+    if os.path.isfile(fp):
+        try:
+            g = json.load(open(fp))
+            return {"accept": list(g.get("accept") or []), "reject": list(g.get("reject") or [])}
+        except (OSError, ValueError):
+            pass
+    return {"accept": [], "reject": []}
+
+
+def _set_gold(video, time, decision):
+    """Record accept / reject / clear for one cut time; a time carries at most one verdict."""
+    g = _load_gold(video)
+    key = round(float(time), 3)
+    g["accept"] = [t for t in g["accept"] if round(t, 3) != key]
+    g["reject"] = [t for t in g["reject"] if round(t, 3) != key]
+    if decision in ("accept", "reject"):
+        g[decision].append(float(time))
+    os.makedirs(GOLD_ROOT, exist_ok=True)
+    json.dump(g, open(_gold_path(video), "w"), indent=1)
+    return g
+
+
+def _gold_state(video):
+    g = _load_gold(video)
+    st = {round(t, 3): "accept" for t in g["accept"]}
+    st.update({round(t, 3): "reject" for t in g["reject"]})
+    return st
+
+
+def _vtt_ts(s):
+    s = max(0.0, s)
+    h = int(s // 3600); m = int(s % 3600 // 60)
+    return f"{h:02d}:{m:02d}:{s % 60:06.3f}"
+
+
+def _clip_vtt(video, t, pre, post):
+    """WebVTT for a preview clip [t-pre, t+post]: one cue per shot in the window, labelled
+    with the running scene index, in clip-relative time -- so the caption bumps to the next
+    shot number exactly at each detected cut."""
+    cuts = sorted(_base_cuts(video)[0])
+    cs, ce = max(0.0, t - pre), t + post
+    bounds = [cs] + [c for c in cuts if cs < c < ce] + [ce]
+    out = ["WEBVTT", ""]
+    for i in range(len(bounds) - 1):
+        a, b = bounds[i], bounds[i + 1]
+        shot = sum(1 for c in cuts if c <= (a + b) / 2) + 1
+        out += [f"{_vtt_ts(a - cs)} --> {_vtt_ts(b - cs)}", f"Shot {shot}", ""]
+    return "\n".join(out)
 
 
 def _movie_fixes(video):
@@ -802,6 +895,10 @@ def _movie_detail(video, probe=False):
     base, source = _base_cuts(video)
     fixes = _movie_fixes(video)
     end = _end_result(base, fixes) if source else []
+    gold = _load_gold(video)
+    rej = {round(t, 3) for t in gold["reject"]}
+    if rej:                                # gold rejects drop false cuts from the end result
+        end = [t for t in end if round(t, 3) not in rej]
     span_end = max(end) if end else (max(base) if base else 0.0)
     canon = _canonical_by_path().get(os.path.realpath(video))
     name = (canon.get("name") if canon else None) or _pretty_name(video)
@@ -809,7 +906,8 @@ def _movie_detail(video, probe=False):
     return {"video": video, "name": name, "slug": _movie_slug(video),
             "processed": source is not None, "base_source": source,
             "base_cuts": base, "cuts": end, "start": 0.0, "end": span_end,
-            "duration": duration or span_end, "n_cuts": len(end), "fixes": fixes}
+            "duration": duration or span_end, "n_cuts": len(end), "fixes": fixes,
+            "gold": {"accept": len(gold["accept"]), "reject": len(gold["reject"])}}
 
 
 def _all_movies():
@@ -969,6 +1067,45 @@ class H(BaseHTTPRequestHandler):
             if not (v and os.path.isfile(v)):
                 return self._json(404, {"error": "unknown movie"})
             return self._json(200, _weak_cuts(v))
+        if p == "/clipvtt":
+            v = qs.get("v", [None])[0]
+            if not (v and os.path.isfile(v)):
+                return self._send(404, "text/plain", b"unknown movie")
+            try:
+                t = float(qs["t"][0]); pre = float(qs.get("pre", ["5"])[0]); post = float(qs.get("post", ["8"])[0])
+            except (KeyError, ValueError):
+                return self._send(400, "text/plain", b"bad params")
+            return self._send(200, "text/vtt", _clip_vtt(v, t, pre, post).encode())
+
+        if p == "/clip":
+            v = qs.get("v", [None])[0]
+            if not (v and os.path.isfile(v)):
+                return self._send(404, "text/plain", b"unknown movie")
+            try:
+                t = float(qs["t"][0])
+                pre = min(30.0, max(0.0, float(qs.get("pre", ["5"])[0])))
+                post = min(60.0, max(1.0, float(qs.get("post", ["8"])[0])))
+            except (KeyError, ValueError):
+                return self._send(400, "text/plain", b"bad params")
+            # transcode a short window to browser-safe H.264 mp4 (works for any source
+            # container/codec, incl. mkv/hevc), streamed straight to the client.
+            cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-ss", str(max(0.0, t - pre)),
+                   "-t", str(pre + post), "-i", v, "-vf", "scale='min(854,iw)':-2",
+                   "-c:v", "libx264", "-preset", "veryfast", "-crf", "24", "-c:a", "aac",
+                   "-movflags", "frag_keyframe+empty_moov", "-f", "mp4", "pipe:1"]
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            self.send_response(200)
+            self.send_header("Content-Type", "video/mp4")
+            self.end_headers()
+            try:
+                for chunk in iter(lambda: proc.stdout.read(65536), b""):
+                    self.wfile.write(chunk)
+            except (BrokenPipeError, ConnectionResetError):
+                proc.kill()
+            finally:
+                proc.stdout.close(); proc.wait()
+            return
+
         if p == "/api/prep_status":
             try:
                 jid = int(qs["job"][0])
@@ -1060,6 +1197,19 @@ class H(BaseHTTPRequestHandler):
             if err:
                 return self._json(400, {"error": err})
             return self._json(200, {"job": jid})
+
+        if p == "/api/gold":
+            n = int(self.headers.get("Content-Length", 0))
+            data = json.loads(self.rfile.read(n)) if n else {}
+            v = data.get("video")
+            if not (v and os.path.isfile(v)):
+                return self._json(404, {"error": "unknown movie"})
+            try:
+                t = float(data["time"])
+            except (KeyError, ValueError, TypeError):
+                return self._json(400, {"error": "bad time"})
+            g = _set_gold(v, t, data.get("decision"))
+            return self._json(200, {"accept": len(g["accept"]), "reject": len(g["reject"])})
 
         d = _session_dir(qs.get("s", [None])[0])
 
