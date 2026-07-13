@@ -28,6 +28,7 @@ import torch
 warnings.filterwarnings("ignore", message="The given NumPy array is not writable")
 
 from .base import DetectResult, Timer, ffprobe_info
+from detector_events import build_torch_events
 
 
 def _rgb_to_hsv(x):  # x: (B,3,H,W) float in [0,1] -> (B,3,H,W) H,S,V in [0,1]
@@ -70,9 +71,11 @@ def detect(video_path, method="cuda", analyse_h=108, batch=256,
 
     if method == "cuda":
         pre = ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
-        # hwdownload can only fetch the GPU frame's own sw format (nv12); the final
-        # -pix_fmt rgb24 then converts on the CPU via swscale.
-        vf = f"scale_cuda={aw}:{ah},hwdownload,format=nv12"
+        # A2-1: convert to 8-bit nv12 ON the GPU (scale_cuda ...:format=nv12) before
+        # hwdownload, so a 10-bit (p010) source downloads cleanly -- hwdownload cannot
+        # emit nv12 from a p010 surface (EINVAL at decode init). The final -pix_fmt rgb24
+        # then converts on the CPU via swscale. The 8-bit path is unaffected.
+        vf = f"scale_cuda={aw}:{ah}:format=nv12,hwdownload,format=nv12"
     else:
         pre = []
         vf = f"scale={aw}:{ah}"
@@ -120,9 +123,9 @@ def detect(video_path, method="cuda", analyse_h=108, batch=256,
             flush(pending)
         proc.wait()
 
-    # --- adaptive thresholding on the score curve ---
+    # --- adaptive thresholding on the score curve (acceptance logic UNCHANGED) ---
     s = np.asarray(scores, dtype=np.float64)
-    cuts = []
+    accepts = []          # (i, spike) per accepted transition, in ascending-i order
     n = len(s)
     last_cut = -10 ** 9
     for i in range(1, n):
@@ -132,12 +135,25 @@ def detect(video_path, method="cuda", analyse_h=108, batch=256,
         local = np.median(neigh) if neigh.size else 0.0
         if s[i] >= min_score and s[i] >= adaptive_ratio * (local + 1e-6):
             if i - last_cut >= 4:  # non-max suppression
-                cuts.append(round(i / fps, 4))
+                # `spike` is the NATIVE confidence -- exactly the quantity the accept test
+                # compares to adaptive_ratio -- with (local + 1e-6) as the denominator
+                # (matches the threshold, stays finite when local == 0). build_torch_events
+                # records frame = i + 1 (A2: scores[i] is the change INTO frame i+1) and
+                # transition_kind "unknown" (a lone spike test can't tell hard from dissolve).
+                accepts.append((i, float(s[i] / (local + 1e-6))))
                 last_cut = i
 
+    # A3.4: this detector owns the ffmpeg decode subprocess; report a nonzero exit so the
+    # export can downgrade status to partial/failed rather than claim "complete".
+    extra = {"analyse_res": f"{aw}x{ah}"}
+    if proc.returncode not in (0, None):
+        extra["decode_ok"] = False
+        extra["decode_detail"] = f"torch decode (ffmpeg) exited {proc.returncode}"
     return DetectResult(
-        name=f"torch-gpu[{method}]", cuts=cuts, elapsed=t.elapsed,
+        name=f"torch-gpu[{method}]", events=build_torch_events(accepts, fps), elapsed=t.elapsed,
         n_frames=n_frames, fps_source=fps, scores=scores,
-        extra={"analyse_res": f"{aw}x{ah}", "batch": batch,
-               "adaptive_ratio": adaptive_ratio, "min_score": min_score},
+        settings={"method": method, "analyse_h": analyse_h, "batch": batch, "wV": wV,
+                  "adaptive_ratio": adaptive_ratio, "min_score": min_score,
+                  "window": window, "device": device},
+        extra=extra,
     )

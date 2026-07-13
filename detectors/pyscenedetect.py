@@ -17,9 +17,10 @@ from scenedetect import open_video, SceneManager
 from scenedetect.detectors import ContentDetector, AdaptiveDetector
 
 from .base import DetectResult, Timer, ffprobe_info
+from detector_events import build_minimal_events
 
 
-def _run(video_path, detector, name, downscale):
+def _run(video_path, detector, name, downscale, settings):
     fps, n_frames, w, h = ffprobe_info(video_path)
     with Timer() as t:
         video = open_video(video_path)
@@ -32,17 +33,18 @@ def _run(video_path, detector, name, downscale):
         scenes = mgr.get_scene_list()
     # scene list is (start, end) pairs; a cut is the start of every scene after the first
     cuts = sorted({s[0].get_seconds() for s in scenes[1:]}) if len(scenes) > 1 else []
-    return DetectResult(name=name, cuts=cuts, elapsed=t.elapsed,
-                        n_frames=n_frames, fps_source=fps,
-                        extra={"downscale": downscale})
+    return DetectResult(name=name, events=build_minimal_events(cuts), elapsed=t.elapsed,
+                        n_frames=n_frames, fps_source=fps, settings=settings, extra={})
 
 
 def detect_content(video_path, threshold=27.0, downscale=2) -> DetectResult:
-    return _run(video_path, ContentDetector(threshold=threshold),
-                "psd-content", downscale)
+    return _run(video_path, ContentDetector(threshold=threshold), "psd-content", downscale,
+                {"method": "cpu", "threshold": threshold, "downscale": downscale})
 
 
 def detect_adaptive(video_path, adaptive_threshold=3.0, min_content_val=15.0, downscale=2) -> DetectResult:
     det = AdaptiveDetector(adaptive_threshold=adaptive_threshold,
                            min_content_val=min_content_val)
-    return _run(video_path, det, "psd-adaptive", downscale)
+    return _run(video_path, det, "psd-adaptive", downscale,
+                {"method": "cpu", "adaptive_threshold": adaptive_threshold,
+                 "min_content_val": min_content_val, "downscale": downscale})

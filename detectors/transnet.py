@@ -16,6 +16,8 @@ import numpy as np
 import torch
 
 from .base import DetectResult, Timer, ffprobe_info
+from detector_events import (build_transnet_events, gradual_span_frames, peak_prob,
+                             transnet_decode_extra)
 
 _MODEL = None
 
@@ -64,48 +66,86 @@ def detect(video_path, method="cuda", threshold=0.4,
 
     if method == "cuda":
         pre = ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
-        vf = "scale_cuda=48:27,hwdownload,format=nv12"
+        # A2-1: convert to 8-bit nv12 ON the GPU (scale_cuda ...:format=nv12) before
+        # hwdownload -- a 10-bit source decodes to a p010 surface, and hwdownload cannot
+        # emit nv12 from p010 (EINVAL at decode init). Downloading nv12 keeps every path
+        # working; the 10-bit->8-bit reduction is immaterial at a 48x27 thumbnail.
+        vf = "scale_cuda=48:27:format=nv12,hwdownload,format=nv12"
     else:
         pre = []
         vf = "scale=48:27"
     cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", *pre, "-i", video_path,
            "-vf", vf, "-pix_fmt", "rgb24", "-f", "rawvideo", "-"]
 
-    model = _model()
+    # A2-2: transnet owns this decode subprocess, so a nonzero ffmpeg exit is reported
+    # honestly (decode_ok False + stderr tail) rather than crashing the CLI (was
+    # check=True). ffmpeg being absent still raises (FileNotFoundError) -- a genuinely
+    # unrunnable situation, not a partial result. The model is loaded only once we have
+    # frames to run it on.
+    FRAME_BYTES = 27 * 48 * 3            # one 48x27 rgb24 frame
+    decode_extra = {}
+    frames = None
     with Timer() as t:
-        raw = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True).stdout
-        frames = np.frombuffer(raw, np.uint8).reshape([-1, 27, 48, 3])
-        frames_t = torch.from_numpy(np.ascontiguousarray(frames)).to(model.device)
-        with torch.no_grad():
-            single, allf = model.predict_frames(frames_t, quiet=True)
-        preds = single.cpu().numpy().reshape(-1)
-        allp = allf.cpu().numpy().reshape(-1)
-        scenes = model.predictions_to_scenes(preds, threshold=threshold)
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        raw = proc.stdout or b""
+        n_full = len(raw) // FRAME_BYTES        # whole frames only (drop any torn tail)
+        if proc.returncode != 0:
+            decode_extra = transnet_decode_extra(
+                proc.returncode, (proc.stderr or b"").decode("utf-8", "replace"))
+        if n_full:
+            frames = np.frombuffer(raw[:n_full * FRAME_BYTES], np.uint8).reshape([-1, 27, 48, 3])
+            model = _model()
+            frames_t = torch.from_numpy(np.ascontiguousarray(frames)).to(model.device)
+            with torch.no_grad():
+                single, allf = model.predict_frames(frames_t, quiet=True)
+            preds = single.cpu().numpy().reshape(-1)
+            allp = allf.cpu().numpy().reshape(-1)
+            scenes = model.predictions_to_scenes(preds, threshold=threshold)
+
+    settings = {"method": method, "threshold": threshold, "gradual_height": gradual_height,
+                "min_gap_s": min_gap_s, "strobe_guard": strobe_guard}
+    if frames is None:
+        # nothing usable decoded -> honest empty result; the exporter downgrades status to
+        # 'failed' (no events) and surfaces decode_detail as a warning (A3.4).
+        return DetectResult(name=f"transnetv2[{method}]", events=[], elapsed=t.elapsed,
+                            n_frames=0, fps_source=fps, scores=[], settings=settings,
+                            extra=decode_extra)
 
     # sharp cuts: first frame of every scene after the first (high precision)
-    sharp = [int(s[0]) for s in scenes[1:]] if len(scenes) > 1 else []
-    n_sharp = len(sharp)
-    # dissolve/fade centres from the all-frames stream, if not already a sharp cut
-    n_gradual = 0
+    sharp_frames = [int(s[0]) for s in scenes[1:]] if len(scenes) > 1 else []
+    n_sharp = len(sharp_frames)
+    # dissolve/fade centres from the all-frames stream, if not already near an accepted
+    # cut. `accepted` grows as graduals are taken, so graduals suppress each other too --
+    # acceptance logic is UNCHANGED from before the amendment.
+    gradual_frames = []
     if gradual_height and gradual_height > 0:
         gap = max(1, int(min_gap_s * fps))
+        accepted = list(sharp_frames)
         for pf in _gradual_peaks(allp, fps, gradual_height, min_gap_s):
-            if all(abs(pf - s) > gap for s in sharp):
-                sharp.append(pf)
-                n_gradual += 1
-    cuts = sorted(round(f / fps, 4) for f in sharp)
-    # suppress strobe/flash bursts (e.g. Vertigo's Nightmare): thins only pathologically
-    # dense regions, leaves normal cutting untouched. See postfilter.dampen_strobe.
-    n_before = len(cuts)
-    if strobe_guard:
-        from postfilter import dampen_strobe
-        # safe global setting: thins only pathologically dense regions, zero collateral
-        # on normal fast cutting. For a known flash montage use a targeted region override.
-        cuts = dampen_strobe(cuts, dens_window=8, dens_max=8, merge_gap=4, keep_gap=2.5)
+            if all(abs(pf - g) > gap for g in accepted):
+                gradual_frames.append(pf)
+                accepted.append(pf)
+    n_gradual = len(gradual_frames)
+
+    # Hand plain per-candidate data to the dependency-light builder (A3.5). Hard cuts are
+    # emitted before graduals, so a rounded-time collision keeps the hard cut (A1 dedupe).
+    # Strobe suppression happens inside the builder. frame = the scene-start / peak frame
+    # (already the first frame of the new shot -- A2 conformant). A2-3: hard-cut confidence
+    # is the PEAK single-frame prob near the boundary (peak_prob), not preds[f] at the
+    # scene-start frame (post-spike, ~0); the gradual stream already reads its own peak.
+    hard = [(f, peak_prob(preds, f)) for f in sharp_frames]
+    gradual = [(f, float(allp[f]), *gradual_span_frames(allp, f, gradual_height))
+               for f in gradual_frames]
+    events, n_strobe_removed = build_transnet_events(
+        hard, gradual, fps, strobe_guard=strobe_guard,
+        strobe_params=dict(dens_window=8, dens_max=8, merge_gap=4, keep_gap=2.5))
+
     return DetectResult(
-        name=f"transnetv2[{method}]", cuts=cuts, elapsed=t.elapsed,
+        name=f"transnetv2[{method}]", events=events, elapsed=t.elapsed,
         n_frames=len(frames), fps_source=fps, scores=preds.tolist(),
-        extra={"threshold": threshold, "gradual_height": gradual_height,
-               "n_sharp": n_sharp, "n_gradual": n_gradual,
-               "n_strobe_removed": n_before - len(cuts)},
+        settings=settings,
+        # decode_extra is {} on a clean exit; on a nonzero-but-usable decode it carries
+        # decode_ok=False so the exporter downgrades this run to 'partial' (A3.4).
+        extra={"n_sharp": n_sharp, "n_gradual": n_gradual,
+               "n_strobe_removed": n_strobe_removed, **decode_extra},
     )

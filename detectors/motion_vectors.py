@@ -33,6 +33,7 @@ from __future__ import annotations
 import numpy as np
 
 from .base import DetectResult, Timer, ffprobe_info
+from detector_events import build_mv_events
 
 
 def _extract(video_path):
@@ -94,7 +95,7 @@ def detect(video_path, keep=0.3, earliness_w=0.5, method="cpu") -> DetectResult:
 
         Iidx = np.where(isI)[0]
         It = t[Iidx]
-        cuts, extra = [], {}
+        events, extra = [], {}
         if len(It) >= 3:
             diffs = np.diff(It)
             keyint = float(np.percentile(diffs, 99)) or float(diffs.max())
@@ -114,7 +115,14 @@ def detect(video_path, keep=0.3, earliness_w=0.5, method="cpu") -> DetectResult:
 
             corr = np.array([corrob(i) for i in Iidx])
             score = corr + earliness_w * earliness
-            cuts = sorted(round(float(x), 3) for x in It[score >= keep])
+            # keep-point (acceptance UNCHANGED): an I-frame is a cut when its combined
+            # score clears `keep`. Hand plain (pts, iframe_index, score) records to the
+            # dependency-light builder (A3.5), in ascending order. build_mv_events rounds
+            # the PTS time to 3 dp, sets frame = the I-frame index (already the first frame
+            # of the new shot -- A2 conformant), and first-wins dedupes rounded collisions.
+            keep_records = [(float(It[k]), int(Iidx[k]), float(score[k]))
+                            for k in range(len(Iidx)) if score[k] >= keep]
+            events = build_mv_events(keep_records)
             extra = {"keyint": round(keyint, 2), "regularity": round(regularity, 2),
                      "n_iframes": int(isI.sum()), "fixed_gop": regularity > 0.9}
             if extra["fixed_gop"]:
@@ -122,6 +130,8 @@ def detect(video_path, keep=0.3, earliness_w=0.5, method="cpu") -> DetectResult:
                                     "scene-cuts; motion-vector cuts are unreliable here")
 
     return DetectResult(
-        name="motion-vectors", cuts=cuts, elapsed=timer.elapsed,
-        n_frames=n_frames, fps_source=fps, extra=extra,
+        name="motion-vectors", events=events, elapsed=timer.elapsed,
+        n_frames=n_frames, fps_source=fps,
+        settings={"keep": keep, "earliness_w": earliness_w, "method": method},
+        extra=extra,
     )

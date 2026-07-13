@@ -23,6 +23,7 @@ from cut_times import write_srt
 from movienet_to_gt import parse_shots
 from evaluate import match
 from sync import sync
+from score_cache import SCORE_CACHE_FORMAT, load_score_cache
 
 
 def _detect_worker(video):
@@ -33,7 +34,10 @@ def _detect_worker(video):
         from detectors import transnet
         r = transnet.detect(video, method="cuda")
         stem = video.rsplit(".", 1)[0]
-        _json.dump({"cuts": r.cuts, "fps": r.fps_source}, open(stem + ".cuts.json", "w"))
+        # design §4 / A3.3: tag the private cache so neither a v2-export consumer nor
+        # this reader mistakes its reduced shape for a full cut-events document.
+        _json.dump({"format": SCORE_CACHE_FORMAT, "cuts": r.cuts, "fps": r.fps_source},
+                   open(stem + ".cuts.json", "w"))
         return (video, len(r.cuts), None)
     except Exception as e:  # noqa
         return (video, 0, str(e)[:200])
@@ -118,7 +122,10 @@ def main():
         cache = stem + ".cuts.json"
         if not os.path.exists(cache):
             print(f"SKIP  {tag:44} (detection failed)"); continue
-        d = json.load(open(cache)); my, my_fps = d["cuts"], d.get("fps", 24.0)
+        try:                                    # A3.3: accept only score-cache / narrow legacy
+            my, my_fps = load_score_cache(json.load(open(cache)))
+        except ValueError as e:
+            print(f"SKIP  {tag:44} ({e})"); continue
 
         # sync reference onto our timeline
         s = sync(ref, my, tol=args.tol)

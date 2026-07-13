@@ -38,6 +38,37 @@ python cut_times.py movie.mkv --detector psd-adaptive --format all
 python cut_times.py --list        # see all detector names
 ```
 
+### JSON output (v2)
+
+`--format json` writes an event-first document: each cut is an object carrying what
+the detector actually knows (frame, `transition_kind`, native-scale `confidence`, and a
+`span` for measured gradual transitions), plus `source`/`run` provenance. The legacy
+`cuts` array is kept as a generated projection (`cuts == [e.time for e in cut_events]`),
+so old readers that only want `cuts`/`fps`/`video` still work unchanged.
+
+Abbreviated example (a real document also carries `source.mtime_utc`, the rest of the
+`run` provenance, and an `analysis` block with `status`/`coverage`/`event_count`):
+
+```json
+{
+  "format": "film-cut-analysis/cut-events",
+  "schema_version": 2,
+  "source": { "path": "movie.mkv", "size_bytes": 7348291021, "duration_seconds": 7281.442 },
+  "run": { "detector_id": "transnetv2", "backend": "cuda", "settings": { "threshold": 0.4 } },
+  "cut_events": [
+    { "time": 12.345, "frame": 296, "transition_kind": "hard",
+      "confidence": { "value": 0.98, "metric": "transnet_peak_prob", "higher_is_stronger": true } }
+  ],
+  "cuts": [12.345],
+  "fps": 24.0, "video": "movie.mkv", "detector": "transnetv2[cuda]"
+}
+```
+
+`format` + `schema_version` identify the document; absent both, a file is a legacy v1
+`{video, detector, fps, cuts}`. `confidence.metric` names each value's native scale, so
+values are never compared across detectors. Only the `json` format changed — CSV / EDL /
+SRT are unchanged.
+
 ## Results on the labelled synthetic clip (90 s, 720p)
 
 P = precision, R = recall, traps = false positives on light-on/whip-pan (lower is better):

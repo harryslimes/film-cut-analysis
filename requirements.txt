@@ -1,0 +1,19 @@
+# film-cut-analysis — Python dependencies (install into a Python 3.12 venv).
+#
+# torch/torchvision are the CUDA 12.4 builds and live on the PyTorch index, not PyPI.
+# The --extra-index-url below lets a single `pip install -r requirements.txt` resolve
+# them; the +cu124 local tag pins the CUDA wheel (PyPI only has the CPU 2.6.0).
+#
+#   py -3.12 -m venv .venv
+#   .venv\Scripts\python -m pip install -U pip
+#   .venv\Scripts\python -m pip install -r requirements.txt
+#
+# System dependency (NOT pip): ffmpeg + ffprobe on PATH (NVDEC-capable build recommended).
+--extra-index-url https://download.pytorch.org/whl/cu124
+torch==2.6.0+cu124
+torchvision==0.21.0+cu124
+numpy==2.4.4
+opencv-python==5.0.0.93
+scenedetect==0.7
+transnetv2-pytorch==1.0.5
+av==18.0.0

@@ -11,10 +11,14 @@ from __future__ import annotations
 
 import argparse
 import csv
+import datetime
 import json
+import math
 import os
+import subprocess
+import sys
 
-from detectors import REGISTRY
+from cut_export import build_document, ExportValidationError
 
 
 def hhmmssff(seconds, fps):
@@ -64,7 +68,157 @@ def write_edl(path, cuts, fps, duration):
                      f"{src_in} {src_out} {src_in} {src_out}\n")
 
 
+# registry key -> (detector_id, backend). Explicit and auditable rather than parsed from
+# the display name (design §3.1: id/backend are stable identifiers; the legacy display
+# string is never parsed). backend = the decode path the run actually used. psd and
+# motion-vectors decode on the CPU (no NVDEC path), so backend is truthfully "cpu"
+# (amendment A3.6 -- never omitted for a known CPU path). Unknown keys fall back to the
+# raw key with no backend.
+_DETECTOR_IDS = {
+    "ffmpeg-cpu":     ("ffmpeg-scene", "cpu"),
+    "ffmpeg-cuda":    ("ffmpeg-scene", "cuda"),
+    "psd-content":    ("psd-content", "cpu"),
+    "psd-adaptive":   ("psd-adaptive", "cpu"),
+    "torch-cpu":      ("torch-gpu", "cpu"),
+    "torch-cuda":     ("torch-gpu", "cuda"),
+    "transnet-cpu":   ("transnetv2", "cpu"),
+    "transnet-cuda":  ("transnetv2", "cuda"),
+    "motion-vectors": ("motion-vectors", "cpu"),
+}
+
+
+def _iso_utc(epoch=None):
+    """UTC timestamp as ...Z -- from `epoch` (an os.stat mtime) if given, else now."""
+    dt = (datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc)
+          if epoch is not None else datetime.datetime.now(datetime.timezone.utc))
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _git_provenance(repo_dir):
+    """(commit, dirty) read from git at runtime, or (None, None) -- never faked -- when
+    git or the .git dir is unavailable (a warning then goes to stderr)."""
+    try:
+        commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_dir,
+                                capture_output=True, text=True, check=True).stdout.strip()
+        dirty = subprocess.run(["git", "status", "--porcelain"], cwd=repo_dir,
+                               capture_output=True, text=True, check=True).stdout
+        return commit, bool(dirty.strip())
+    except (OSError, subprocess.CalledProcessError):
+        print("warning: git provenance unavailable; omitting tool_commit/tool_dirty",
+              file=sys.stderr)
+        return None, None
+
+
+def _valid_fps(fps):
+    return (isinstance(fps, (int, float)) and not isinstance(fps, bool)
+            and math.isfinite(fps) and fps > 0)
+
+
+def _ffprobe_stdout(video_path, entries_args):
+    """ffprobe stdout for the given -show_entries args, or None if ffprobe fails."""
+    try:
+        return subprocess.run(
+            ["ffprobe", "-v", "error", *entries_args,
+             "-of", "default=nokey=1:noprint_wrappers=1", video_path],
+            capture_output=True, text=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def _parse_pos_float(s):
+    try:
+        v = float(s)
+    except (TypeError, ValueError):
+        return None
+    return v if math.isfinite(v) and v > 0 else None
+
+
+def _probe_duration(video_path):
+    """(duration_seconds, method) from ffprobe, or (None, None). Tries the container
+    `format=duration` first, then the longest video-`stream=duration` (S3-F2 gap 2);
+    `method` is "container" or "stream" so the caller can name the fallback used."""
+    fmt = _ffprobe_stdout(video_path, ["-show_entries", "format=duration"])
+    d = _parse_pos_float((fmt or "").strip())
+    if d is not None:
+        return d, "container"
+    streams = _ffprobe_stdout(video_path, ["-select_streams", "v", "-show_entries", "stream=duration"])
+    vals = [v for v in (_parse_pos_float(x) for x in (streams or "").splitlines()) if v is not None]
+    if vals:
+        return max(vals), "stream"
+    return None, None
+
+
+def build_v2_document(video_path, detector_key, res, repo_dir=None):
+    """Assemble the design-§3 v2 document for a completed detector run and return it
+    (validated on the way out). Separate from main() so it is importable and testable
+    without a video. Reads res.events / .fps_source / .n_frames / .name / .settings /
+    .extra."""
+    if repo_dir is None:
+        repo_dir = os.path.dirname(os.path.abspath(__file__))
+
+    fps = res.fps_source
+    if not _valid_fps(fps):                # A3.4: non-positive/non-finite fps never exported
+        raise ExportValidationError(f"fps must be positive and finite for export (got {fps!r})")
+
+    st = os.stat(video_path)
+
+    # A3.4: duration from ffprobe container/stream timing where available; else estimate
+    # from n_frames/fps and say so in a warning.
+    probed, probe_method = _probe_duration(video_path)
+    duration_estimated = False
+    if probed is not None:
+        duration = probed
+    elif res.n_frames:
+        duration = res.n_frames / fps
+        duration_estimated = True
+    else:
+        duration = 0.0
+    have_duration = math.isfinite(duration) and duration > 0
+
+    source = {"path": video_path, "size_bytes": st.st_size,
+              "mtime_utc": _iso_utc(st.st_mtime),
+              "duration_seconds": round(duration, 3) if have_duration else None}
+
+    detector_id, backend = _DETECTOR_IDS.get(detector_key, (detector_key, None))
+    commit, dirty = _git_provenance(repo_dir)
+    run = {"detector_id": detector_id, "backend": backend,
+           "tool_commit": commit, "tool_dirty": dirty,
+           "model": "transnetv2-pytorch (weights as installed)" if detector_id == "transnetv2" else None,
+           "settings": dict(getattr(res, "settings", None) or {}),   # A3.1: resolved config, NOT diagnostics
+           "generated_by": "cut_times.py", "generated_utc": _iso_utc()}
+
+    # A3.4 honest status: detectors that own their decode subprocess (torch, ffmpeg-scene)
+    # report decode_ok in extra. Nonzero exit -> "partial" if we still have events, else
+    # "failed", with a recorded warning.
+    warnings = []
+    if res.extra.get("decode_ok", True):
+        status = "complete"
+    else:
+        status = "partial" if res.events else "failed"
+        warnings.append(res.extra.get("decode_detail", "decoder exited nonzero"))
+    if res.extra.get("warning"):           # e.g. motion-vectors' fixed-GOP diagnostic
+        warnings.append(res.extra["warning"])
+    if have_duration and probe_method == "stream":
+        warnings.append("source duration from ffprobe stream timing "
+                        "(container duration unavailable)")
+    if have_duration and duration_estimated:
+        warnings.append("source duration estimated from n_frames/fps "
+                        "(ffprobe container/stream timing unavailable)")
+    if not have_duration:
+        warnings.append("source duration unavailable; coverage omitted "
+                        "(time-in-coverage check relaxes to time >= 0)")
+
+    analysis = {"status": status,
+                "coverage": [{"start": 0.0, "end": round(duration, 3)}] if have_duration else [],
+                "warnings": warnings}
+
+    return build_document(res.events, source=source, run=run, analysis=analysis,
+                          fps=fps, video=video_path, detector=res.name)
+
+
 def main():
+    from detectors import REGISTRY   # deferred: keeps cut_times importable without the
+                                     # heavy detector deps (torch/av/scenedetect) for tests
     ap = argparse.ArgumentParser()
     ap.add_argument("video", nargs="?")
     ap.add_argument("--detector", default="torch-cpu")
@@ -83,6 +237,8 @@ def main():
         raise SystemExit(f"unknown detector '{args.detector}'. try --list")
 
     res = REGISTRY[args.detector](args.video)
+    if not _valid_fps(res.fps_source):      # A3.4: never write any format with invalid fps
+        raise SystemExit(f"error: detector returned invalid fps ({res.fps_source!r}); refusing to write output")
     stem = args.video.rsplit(".", 1)[0]
     duration = res.n_frames / res.fps_source
 
@@ -98,8 +254,8 @@ def main():
         p = stem + ".cuts.srt"; write_srt(p, res.cuts, duration, args.label); wrote.append(p)
     if args.format in ("json", "all"):
         p = stem + ".cuts.json"
-        json.dump({"video": args.video, "detector": res.name, "fps": res.fps_source,
-                   "cuts": res.cuts}, open(p, "w"), indent=2); wrote.append(p)
+        doc = build_v2_document(args.video, args.detector, res)
+        json.dump(doc, open(p, "w"), indent=2, allow_nan=False); wrote.append(p)
     for p in wrote:
         print("wrote", p)
 
