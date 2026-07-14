@@ -1057,25 +1057,29 @@ def _vtt_ts(s):
 def _clip_vtt(video, t, pre, post, marks=None, only_marks=False):
     """WebVTT for a preview clip [t-pre, t+post], in clip-relative time.
 
-    only_marks=True (the single-cut watch): emit ONE caption, at the cut under review, and
-    nothing else -- so the only subtitle you see is the cut in question. Otherwise: one cue
-    per shot labelled with the running scene index (bumps at every cut), with any `marks`
-    (the cut/s being judged) flagged so you know which transition matters in a busy window."""
+    only_marks=True (the single-cut watch): ONE caption naming the cut's ordinal ("Cut #k"),
+    shown only for the ~0.6s leading into the cut (which sits at the end of the clip) so it
+    lands at the cut rather than showing from the start. Otherwise: one cue per shot with the
+    running scene index, and any `marks` (the cut/s being judged) labelled with their number."""
     cuts = sorted(_base_cuts(video)[0])
     cs, ce = max(0.0, t - pre), t + post
+
+    def _cutno(x):                            # ordinal of the cut at time x within the film
+        return sum(1 for c in cuts if c <= x + 1e-4)
+
     if only_marks:
-        # single-cut watch: caption the WHOLE clip so "◆ THIS CUT" is visible on every frame
-        # (including the cut frame at the end), regardless of when the track finishes loading.
-        if any(cs <= m <= ce for m in (marks or [])):
-            return "WEBVTT\n\n" + f"{_vtt_ts(0)} --> {_vtt_ts(ce - cs + 0.5)}\n◆ THIS CUT\n"
-        return "WEBVTT\n"
+        out = ["WEBVTT", ""]
+        for x in sorted(m for m in (marks or []) if cs <= m <= ce):
+            a = max(cs, x - 0.6)              # appear ~0.6s before the cut, hold to clip end
+            out += [f"{_vtt_ts(a - cs)} --> {_vtt_ts(ce - cs)}", f"Cut #{_cutno(x)}", ""]
+        return "\n".join(out)
     mk = {round(x, 2) for x in (marks or [])}
     bounds = [cs] + [c for c in cuts if cs < c < ce] + [ce]
     out = ["WEBVTT", ""]
     for i in range(len(bounds) - 1):
         a, b = bounds[i], bounds[i + 1]
         shot = sum(1 for c in cuts if c <= (a + b) / 2) + 1
-        label = f"◆ THIS CUT → Shot {shot}" if round(a, 2) in mk else f"Shot {shot}"
+        label = f"◆ Cut #{_cutno(a)}" if round(a, 2) in mk else f"Shot {shot}"
         out += [f"{_vtt_ts(a - cs)} --> {_vtt_ts(b - cs)}", label, ""]
     return "\n".join(out)
 
