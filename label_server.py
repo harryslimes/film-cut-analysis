@@ -539,7 +539,7 @@ async function setGold(t, decision){
   bumpNcuts((cur==='reject'?1:0)-(g==='reject'?1:0));   // rejects drop cuts from the end result
   weakSlide(); renderClusterList();
 }
-function watchCut(t){ openClip(t, 1, 0.08, '@'+fmtTC(t), 'plays the 1s up to the cut and ends on the cut frame', [t], true); }
+function watchCut(t){ openClip(t, 2, 0.08, '@'+fmtTC(t), 'plays the 2s up to the cut and ends on the cut frame', [t], true); }
 function openClip(t, pre, post, label, note, marks, onlyMark){
   const m=window._movie;
   const q='v='+encodeURIComponent(m.video)+'&t='+t+'&pre='+pre.toFixed(2)+'&post='+post.toFixed(2);
