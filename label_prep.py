@@ -63,7 +63,12 @@ def main():
     frames = {}
     for f in local_maxima(single, a.floor): frames[f] = max(frames.get(f, 0), single[f])
     for f in local_maxima(allf, max(a.floor, 0.15)): frames[f] = max(frames.get(f, 0), allf[f])
-    kept_times = srt_cuts(a.video.rsplit(".", 1)[0] + ".srt")
+    # seed "kept" (green): a clean ground-truth .srt if the movie has one, else ONLY the
+    # model's confident detections -- a candidate is pre-kept when its peak probability
+    # clears KEEP_CONF. Weak local maxima (a 0.27 "dissolve" that clearly isn't a cut) stay
+    # amber for you to judge, so detector junk never shows up already accepted as green.
+    KEEP_CONF = 0.5
+    kept_times = srt_cuts(a.video.rsplit(".", 1)[0] + ".srt") or None
     d = int(round(a.delta * fps)); nlocal = len(tn)
 
     cands = []
@@ -93,11 +98,17 @@ def main():
                 cv2.imwrite(path, img)
         idx += 1
     proc.wait()
-    # mark ONE nearest candidate per current kept cut (avoids near-duplicate keeps)
-    for kt in kept_times:
-        near = min(cands, key=lambda c: abs(c["time"] - kt))
-        if abs(near["time"] - kt) <= 0.4:
-            near["kept"] = True
+    # mark ONE nearest candidate per current kept cut (avoids near-duplicate keeps); with
+    # no reference list, fall back to the model's own accepted cuts (sharp >= threshold 0.4)
+    if kept_times:                       # clean GT: match each GT cut to its nearest candidate
+        for kt in kept_times:
+            near = min(cands, key=lambda c: abs(c["time"] - kt))
+            if abs(near["time"] - kt) <= 0.4:
+                near["kept"] = True
+    else:                                # no GT: pre-keep only the model's confident cuts
+        for c in cands:
+            if c["prob"] >= KEEP_CONF:
+                c["kept"] = True
     meta = {"video": a.video, "name": a.name, "start": a.start, "end": a.end,
             "fps": fps, "candidates": cands}
     json.dump(meta, open(f"{outdir}/candidates.json", "w"), indent=1)
