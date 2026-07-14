@@ -257,6 +257,13 @@ HOME_PAGE = r"""<!doctype html><html><head><meta charset=utf-8><title>Cut librar
  .diaggrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin-top:10px}
  .diagcell .celllab{font-size:10px;color:#7d8590;text-align:center;margin-top:2px}
  .cthumb{height:52px;width:auto;border-radius:3px;background:#000;flex:none}
+ .rng{position:relative;flex:1;min-width:240px;height:26px}
+ .rng .rtrack{position:absolute;left:0;right:0;top:11px;height:4px;background:#333;border-radius:2px}
+ .rng .rfill{position:absolute;top:11px;height:4px;background:#4679b8;border-radius:2px}
+ .rng input[type=range]{position:absolute;left:0;top:0;width:100%;height:26px;margin:0;background:none;pointer-events:none;-webkit-appearance:none;appearance:none}
+ .rng input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;pointer-events:auto;height:18px;width:18px;border-radius:50%;background:#7fb0e8;border:2px solid #141414;cursor:pointer}
+ .rng input[type=range]::-moz-range-thumb{pointer-events:auto;height:16px;width:16px;border-radius:50%;background:#7fb0e8;border:2px solid #141414;cursor:pointer}
+ .rng input[type=range]::-webkit-slider-runnable-track{background:none} .rng input[type=range]::-moz-range-track{background:none}
  .gbtn{font-size:12px;padding:5px 8px} .gbtn.on.gacc{background:#1f6f3f;border-color:#2c9;color:#eafff2}
  .gbtn.on.grej{background:#7a2d29;border-color:#c66;color:#ffe6e3}
  .overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:50;align-items:center;justify-content:center;padding:20px}
@@ -400,12 +407,17 @@ async function renderMovie(video){
         <div class=tabs><button id=tab_list class=on onclick="showTab('list')">List</button><button id=tab_clusters onclick="showTab('clusters')">Clusters</button></div>
       </div>
       <div id=panel_list>
-        <div class=muted>Drag to choose how many of the shakiest cuts to review — the confidence you're
-          going down to updates as you drag. Click any to jump to it for a fix.</div>
+        <div class=muted>Two handles set the confidence window shown — the low handle defaults to the
+          accept threshold (0.5). Drag either to widen/narrow. Rejecting a cut removes it from the list.</div>
         <div id=weakbands class=muted style="margin-top:6px">loading…</div>
-        <div class=row style="margin-top:6px">
-          <input type=range id=weakn min=0 max=0 value=0 style="flex:1;min-width:220px" oninput="weakSlide()">
-          <span id=weaklabel class=muted style="min-width:250px"></span>
+        <div class=row style="margin-top:10px;align-items:center">
+          <span class=muted>conf</span>
+          <div class=rng id=weakrng>
+            <div class=rtrack></div><div class=rfill id=weakfill></div>
+            <input type=range id=weaklo min=0.3 max=0.85 step=0.005 value=0.5 oninput="weakSlide('lo')">
+            <input type=range id=weakhi min=0.3 max=0.85 step=0.005 value=0.85 oninput="weakSlide('hi')">
+          </div>
+          <span id=weaklabel class=muted style="min-width:190px"></span>
         </div>
         <div id=weaklist style="margin-top:8px;max-height:340px;overflow:auto"></div>
       </div>
@@ -465,9 +477,6 @@ async function loadWeak(){
   if(!j.total){ bands.textContent='No per-cut confidence for this base run (only detector runs carry it, not imported canonicals).'; return; }
   window._weak=j.review; const b=j.bands;
   bands.innerHTML=`of ${j.total} cuts — <b style="color:#e0a">&lt;0.4:</b> ${b.lt04} · <b style="color:#f0d79a">0.4–0.6:</b> ${b.b0406} · <b>0.6–0.8:</b> ${b.b0608} · <b style="color:#bfe6cd">≥0.8:</b> ${b.gte08} (solid)`;
-  const sl=document.getElementById('weakn');
-  sl.max=j.review.length;
-  sl.value=j.review.filter(r=>r.conf<0.5).length;   // default: everything below 0.5
   weakSlide();
 }
 function cutRow(x){ const v=encodeURIComponent(window._movie.video); return `<div class=fixrow>
@@ -480,11 +489,15 @@ function cutRow(x){ const v=encodeURIComponent(window._movie.video); return `<di
     <button class="gbtn grej ${x.gold==='reject'?'on':''}" onclick="setGold(${x.time},'reject')" title="gold: not a cut">✗ reject</button>
     <button onclick="reviewCut(${x.time})">fix →</button></div>`;
 }
-function weakSlide(){
-  const w=window._weak||[], n=+document.getElementById('weakn').value;
-  const sub=w.slice(0,n), floor=n>0?w[n-1].conf:null;
-  document.getElementById('weaklabel').textContent =
-    n>0 ? `reviewing ${n} weakest — down to conf ${floor}` : 'none selected — drag right';
+function weakSlide(which){
+  const loEl=document.getElementById('weaklo'), hiEl=document.getElementById('weakhi');
+  if(!loEl||!hiEl) return;
+  let lo=+loEl.value, hi=+hiEl.value;
+  if(lo>hi){ if(which==='hi') loEl.value=(lo=hi); else hiEl.value=(hi=lo); }  // handles can't cross
+  const MIN=0.3, MAX=0.85, fill=document.getElementById('weakfill');
+  if(fill){ fill.style.left=((lo-MIN)/(MAX-MIN)*100)+'%'; fill.style.right=((MAX-hi)/(MAX-MIN)*100)+'%'; }
+  const sub=(window._weak||[]).filter(r=>r.conf>=lo && r.conf<=hi);
+  document.getElementById('weaklabel').textContent=`conf ${lo.toFixed(3)}–${hi.toFixed(3)} · ${sub.length} cuts`;
   document.getElementById('weaklist').innerHTML=sub.map(cutRow).join('');
 }
 function bumpNcuts(d){   // arithmetic live update; server recomputes exactly on reload
@@ -505,18 +518,15 @@ async function setGold(t, decision){
   if(row) row.gold=g; if(cm) cm.gold=g;
   bumpNcuts((cur==='reject'?1:0)-(g==='reject'?1:0));   // rejects drop cuts from the end result
   if(g==='reject' && row){        // the list shows only accepted cuts, so a reject leaves it
-    const idx=window._weak.indexOf(row);
-    if(idx>=0){ window._weak.splice(idx,1);
-      const sl=document.getElementById('weakn');
-      if(sl){ sl.max=window._weak.length; if(+sl.value>window._weak.length) sl.value=window._weak.length; } }
+    const idx=window._weak.indexOf(row); if(idx>=0) window._weak.splice(idx,1);
   }
   weakSlide(); renderClusterList();
 }
-function watchCut(t){ openClip(t, 5, 8, '@'+fmtTC(t), 'the ◆ THIS CUT caption marks the cut you are reviewing', [t]); }
-function openClip(t, pre, post, label, note, marks){
+function watchCut(t){ openClip(t, 1.5, 1.5, '@'+fmtTC(t), 'only the cut under review is captioned', [t], true); }
+function openClip(t, pre, post, label, note, marks, onlyMark){
   const m=window._movie;
   const q='v='+encodeURIComponent(m.video)+'&t='+t+'&pre='+pre.toFixed(2)+'&post='+post.toFixed(2);
-  const vq=q+((marks&&marks.length)?'&mark='+marks.map(x=>x.toFixed(3)).join(','):'');
+  const vq=q+((marks&&marks.length)?'&mark='+marks.map(x=>x.toFixed(3)).join(','):'')+(onlyMark?'&only=1':'');
   let ov=document.getElementById('player');
   if(!ov){ ov=document.createElement('div'); ov.id='player'; ov.className='overlay';
     ov.addEventListener('click',e=>{ if(e.target===ov) closePlayer(); }); document.body.appendChild(ov); }
@@ -1025,14 +1035,20 @@ def _vtt_ts(s):
     return f"{h:02d}:{m:02d}:{s % 60:06.3f}"
 
 
-def _clip_vtt(video, t, pre, post, marks=None):
-    """WebVTT for a preview clip [t-pre, t+post]: one cue per shot in the window, labelled
-    with the running scene index, in clip-relative time -- so the caption bumps to the next
-    shot number exactly at each detected cut. `marks` are the cut time(s) under review: the
-    shot that begins at a marked cut is flagged so you know which transition is the one you
-    are judging (vs. other cuts that merely fall inside the window)."""
+def _clip_vtt(video, t, pre, post, marks=None, only_marks=False):
+    """WebVTT for a preview clip [t-pre, t+post], in clip-relative time.
+
+    only_marks=True (the single-cut watch): emit ONE caption, at the cut under review, and
+    nothing else -- so the only subtitle you see is the cut in question. Otherwise: one cue
+    per shot labelled with the running scene index (bumps at every cut), with any `marks`
+    (the cut/s being judged) flagged so you know which transition matters in a busy window."""
     cuts = sorted(_base_cuts(video)[0])
     cs, ce = max(0.0, t - pre), t + post
+    if only_marks:
+        out = ["WEBVTT", ""]
+        for x in sorted(m for m in (marks or []) if cs <= m < ce):
+            out += [f"{_vtt_ts(x - cs)} --> {_vtt_ts(min(x + 1.2, ce) - cs)}", "◆ THIS CUT", ""]
+        return "\n".join(out)
     mk = {round(x, 2) for x in (marks or [])}
     bounds = [cs] + [c for c in cuts if cs < c < ce] + [ce]
     out = ["WEBVTT", ""]
@@ -1292,7 +1308,8 @@ class H(BaseHTTPRequestHandler):
                     marks.append(float(s))
                 except ValueError:
                     pass
-            return self._send(200, "text/vtt", _clip_vtt(v, t, pre, post, marks).encode())
+            only = qs.get("only", ["0"])[0] == "1"
+            return self._send(200, "text/vtt", _clip_vtt(v, t, pre, post, marks, only).encode())
 
         if p == "/clip":
             v = qs.get("v", [None])[0]
