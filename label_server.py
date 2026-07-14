@@ -408,9 +408,11 @@ async function renderMovie(video){
       </div>
       <div id=panel_list>
         <div class=muted>Two handles set the confidence window shown — the low handle defaults to the
-          accept threshold (0.5). Drag either to widen/narrow. Rejecting a cut removes it from the list.</div>
+          accept threshold (0.5). Accepting or rejecting a cut removes it from this list; use
+          "Decided" to revisit what you've already accepted/rejected.</div>
         <div id=weakbands class=muted style="margin-top:6px">loading…</div>
-        <div class=row style="margin-top:10px;align-items:center">
+        <div class=tabs style="margin-top:8px"><button id=wt_und class=on onclick="weakMode('undecided')">To review</button><button id=wt_dec onclick="weakMode('decided')">Decided</button></div>
+        <div id=weakrngrow class=row style="margin-top:10px;align-items:center">
           <span class=muted>conf</span>
           <div class=rng id=weakrng>
             <div class=rtrack></div><div class=rfill id=weakfill></div>
@@ -470,13 +472,21 @@ function showTab(which){
   history.replaceState(null,'','/?v='+encodeURIComponent(window._movie.video)+(which==='clusters'?'#clusters':''));
 }
 
+let _weakMode='undecided';
 async function loadWeak(){
   const m=window._movie;
   const bands=document.getElementById('weakbands');
   const j=await (await fetch('/api/weak?v='+encodeURIComponent(m.video))).json();
   if(!j.total){ bands.textContent='No per-cut confidence for this base run (only detector runs carry it, not imported canonicals).'; return; }
-  window._weak=j.review; const b=j.bands;
+  window._weakall=j.rows||[]; const b=j.bands;
   bands.innerHTML=`of ${j.total} cuts — <b style="color:#e0a">&lt;0.4:</b> ${b.lt04} · <b style="color:#f0d79a">0.4–0.6:</b> ${b.b0406} · <b>0.6–0.8:</b> ${b.b0608} · <b style="color:#bfe6cd">≥0.8:</b> ${b.gte08} (solid)`;
+  weakSlide();
+}
+function weakMode(mode){
+  _weakMode=mode;
+  document.getElementById('wt_und').classList.toggle('on', mode==='undecided');
+  document.getElementById('wt_dec').classList.toggle('on', mode==='decided');
+  document.getElementById('weakrngrow').style.display = mode==='undecided'?'':'none';
   weakSlide();
 }
 function cutRow(x){ const v=encodeURIComponent(window._movie.video); return `<div class=fixrow>
@@ -492,12 +502,22 @@ function cutRow(x){ const v=encodeURIComponent(window._movie.video); return `<di
 function weakSlide(which){
   const loEl=document.getElementById('weaklo'), hiEl=document.getElementById('weakhi');
   if(!loEl||!hiEl) return;
-  let lo=+loEl.value, hi=+hiEl.value;
-  if(lo>hi){ if(which==='hi') loEl.value=(lo=hi); else hiEl.value=(hi=lo); }  // handles can't cross
-  const MIN=0.3, MAX=0.85, fill=document.getElementById('weakfill');
-  if(fill){ fill.style.left=((lo-MIN)/(MAX-MIN)*100)+'%'; fill.style.right=((MAX-hi)/(MAX-MIN)*100)+'%'; }
-  const sub=(window._weak||[]).filter(r=>r.conf>=lo && r.conf<=hi);
-  document.getElementById('weaklabel').textContent=`conf ${lo.toFixed(3)}–${hi.toFixed(3)} · ${sub.length} cuts`;
+  const all=window._weakall||[];
+  const nU=all.filter(r=>!r.gold).length, nD=all.filter(r=>r.gold).length;
+  const bu=document.getElementById('wt_und'), bd=document.getElementById('wt_dec');
+  if(bu) bu.textContent='To review ('+nU+')'; if(bd) bd.textContent='Decided ('+nD+')';
+  let sub;
+  if(_weakMode==='decided'){
+    sub=all.filter(r=>r.gold).slice().sort((a,b)=>a.conf-b.conf);
+    document.getElementById('weaklabel').textContent=`${sub.length} decided`;
+  } else {
+    let lo=+loEl.value, hi=+hiEl.value;
+    if(lo>hi){ if(which==='hi') loEl.value=(lo=hi); else hiEl.value=(hi=lo); }  // handles can't cross
+    const MIN=0.3, MAX=0.85, fill=document.getElementById('weakfill');
+    if(fill){ fill.style.left=((lo-MIN)/(MAX-MIN)*100)+'%'; fill.style.right=((MAX-hi)/(MAX-MIN)*100)+'%'; }
+    sub=all.filter(r=>!r.gold && r.conf>=lo && r.conf<=hi);
+    document.getElementById('weaklabel').textContent=`conf ${lo.toFixed(3)}–${hi.toFixed(3)} · ${sub.length} to review`;
+  }
   document.getElementById('weaklist').innerHTML=sub.map(cutRow).join('');
 }
 function bumpNcuts(d){   // arithmetic live update; server recomputes exactly on reload
@@ -509,20 +529,17 @@ function findClusterCut(t){
   return null;
 }
 async function setGold(t, decision){
-  const m=window._movie, row=(window._weak||[]).find(r=>r.time===t), cm=findClusterCut(t);
+  const m=window._movie, row=(window._weakall||[]).find(r=>r.time===t), cm=findClusterCut(t);
   const cur=row?row.gold:(cm?cm.gold:null);
   const dec=(cur===decision) ? 'clear' : decision;   // click again to un-set
   await fetch('/api/gold',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({video:m.video, time:t, decision:dec})});
   const g = dec==='clear' ? null : dec;
-  if(row) row.gold=g; if(cm) cm.gold=g;
+  if(row) row.gold=g; if(cm) cm.gold=g;   // a verdict moves the cut out of "To review" into "Decided"
   bumpNcuts((cur==='reject'?1:0)-(g==='reject'?1:0));   // rejects drop cuts from the end result
-  if(g==='reject' && row){        // the list shows only accepted cuts, so a reject leaves it
-    const idx=window._weak.indexOf(row); if(idx>=0) window._weak.splice(idx,1);
-  }
   weakSlide(); renderClusterList();
 }
-function watchCut(t){ openClip(t, 1.5, 1.5, '@'+fmtTC(t), 'only the cut under review is captioned', [t], true); }
+function watchCut(t){ openClip(t, 3, 0, '@'+fmtTC(t), 'plays the 3s up to the cut and ends on the cut frame', [t], true); }
 function openClip(t, pre, post, label, note, marks, onlyMark){
   const m=window._movie;
   const q='v='+encodeURIComponent(m.video)+'&t='+t+'&pre='+pre.toFixed(2)+'&post='+post.toFixed(2);
@@ -534,7 +551,7 @@ function openClip(t, pre, post, label, note, marks, onlyMark){
     <div class=prow><b>${label}</b><span class=muted>${note}</span><span class=sp></span><button onclick="closePlayer()">close ✕</button></div>
     <video controls autoplay muted playsinline style="width:100%;max-height:70vh;background:#000">
       <source src="/clip?${q}" type="video/mp4"><track default kind=subtitles srclang=en src="/clipvtt?${vq}"></video>
-    <div class=muted style="margin-top:6px">Transcoding a ~${Math.round(pre+post)}s clip (${pre.toFixed(1)}s before → ${post.toFixed(1)}s after). Muted autoplay — unmute in the controls.</div></div>`;
+    <div class=muted style="margin-top:6px">Transcoding a ${Math.round(pre+post)}s clip. Muted autoplay — unmute in the controls.</div></div>`;
   ov.style.display='flex';
 }
 
@@ -596,7 +613,7 @@ async function goldCluster(i, decision){
     body:JSON.stringify({video:m.video, times:c.members.map(x=>x.time), decision:dec})});
   const before=c.members.filter(x=>x.gold==='reject').length;
   const g = dec==='clear' ? null : dec;
-  c.members.forEach(x=>{ x.gold=g; const r=(window._weak||[]).find(y=>y.time===x.time); if(r) r.gold=g; });
+  c.members.forEach(x=>{ x.gold=g; const r=(window._weakall||[]).find(y=>y.time===x.time); if(r) r.gold=g; });
   bumpNcuts(before - c.members.filter(x=>x.gold==='reject').length);
   renderClusterList(); weakSlide();
 }
@@ -940,8 +957,10 @@ def _weak_cuts(video, ceiling=0.85):
              "b0406": sum(1 for r in rows if 0.4 <= r["conf"] < 0.6),
              "b0608": sum(1 for r in rows if 0.6 <= r["conf"] < 0.8),
              "gte08": sum(1 for r in rows if r["conf"] >= 0.8)}
-    review = [r for r in rows if r["conf"] < ceiling and round(r["time"], 3) in accepted]
-    return {"total": len(rows), "ceiling": ceiling, "bands": bands, "review": review}
+    # reviewable weak cuts: those still in the end result (accepted, undecided) OR already
+    # carrying a verdict (so the "Decided" view can show rejects, which left the end result).
+    review = [r for r in rows if r["conf"] < ceiling and (round(r["time"], 3) in accepted or r["gold"])]
+    return {"total": len(rows), "ceiling": ceiling, "bands": bands, "rows": review}
 
 
 def _cut_clusters(video, conf_max=0.6, gap=1.5, min_size=3):
@@ -1046,8 +1065,11 @@ def _clip_vtt(video, t, pre, post, marks=None, only_marks=False):
     cs, ce = max(0.0, t - pre), t + post
     if only_marks:
         out = ["WEBVTT", ""]
-        for x in sorted(m for m in (marks or []) if cs <= m < ce):
-            out += [f"{_vtt_ts(x - cs)} --> {_vtt_ts(min(x + 1.2, ce) - cs)}", "◆ THIS CUT", ""]
+        for x in sorted(m for m in (marks or []) if cs <= m <= ce):
+            a = max(cs, x - 1.0)                       # caption the ~1s leading into the cut
+            if x - a < 0.05:
+                continue
+            out += [f"{_vtt_ts(a - cs)} --> {_vtt_ts(x - cs)}", "◆ THIS CUT", ""]
         return "\n".join(out)
     mk = {round(x, 2) for x in (marks or [])}
     bounds = [cs] + [c for c in cuts if cs < c < ce] + [ce]
@@ -1318,7 +1340,7 @@ class H(BaseHTTPRequestHandler):
             try:
                 t = float(qs["t"][0])
                 pre = min(30.0, max(0.0, float(qs.get("pre", ["5"])[0])))
-                post = min(60.0, max(1.0, float(qs.get("post", ["8"])[0])))
+                post = min(60.0, max(0.0, float(qs.get("post", ["8"])[0])))
             except (KeyError, ValueError):
                 return self._send(400, "text/plain", b"bad params")
             # transcode a short window to browser-safe H.264 mp4 (works for any source
