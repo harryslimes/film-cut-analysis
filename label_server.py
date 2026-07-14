@@ -446,23 +446,50 @@ function diagHover(ev){
   g.querySelector('span').textContent=fmtTC(p.t);
 }
 function diagHideGuides(){ if(window._diagDragging) return; document.querySelectorAll('#diagwrap .diagguide').forEach(g=>g.style.display='none'); }
+// Two ways to pick a range, whichever feels natural:
+//  · CLICK the start, move (a live band follows the cursor), then CLICK the end; or
+//  · press-drag-release in one motion.
 function diagDown(ev){
   const t=diagTimeAt(ev); if(t==null) return;
   ev.preventDefault();
-  window._diagAnchor=t; window._diagSel={t0:t,t1:t}; window._diagDragging=true; paintDiagSel();
+  window._diagDragging=true; window._diagMoved=false;
+  window._diagDownX=ev.clientX; window._diagDownY=ev.clientY; window._diagAnchor=t;
 }
 function diagMoveDoc(ev){
-  if(!window._diagDragging) return;
-  const t=diagTimeAt(ev); if(t==null) return;
-  const a=window._diagAnchor;
-  window._diagSel={t0:Math.min(a,t),t1:Math.max(a,t)};
-  paintDiagSel(); updateReviewBtn(); diagHover(ev);   // keep the guide on the cursor while dragging
+  if(window._diagDragging){
+    const t=diagTimeAt(ev);
+    if(t!=null){
+      if(Math.abs(ev.clientX-window._diagDownX)+Math.abs(ev.clientY-window._diagDownY)>4) window._diagMoved=true;
+      if(window._diagMoved){   // it's a drag → rubber-band from the press point
+        window._diagPickStart=null;
+        window._diagSel={t0:Math.min(window._diagAnchor,t),t1:Math.max(window._diagAnchor,t)};
+        paintDiagSel(); updateReviewBtn();
+      }
+    }
+    diagHover(ev); return;
+  }
+  if(window._diagPickStart!=null){   // after a start-click: preview the range to the cursor
+    const t=diagTimeAt(ev);
+    if(t!=null){ window._diagSel={t0:Math.min(window._diagPickStart,t),t1:Math.max(window._diagPickStart,t)}; paintDiagSel(); updateReviewBtn(); }
+  }
+  diagHover(ev);
 }
-function diagUpDoc(){
+function diagUpDoc(ev){
   if(!window._diagDragging) return;
   window._diagDragging=false;
-  if(window._diagSel && window._diagSel.t1-window._diagSel.t0<0.5) clearDiagSel();  // a mere click clears
-  else updateReviewBtn();
+  if(window._diagMoved){   // a drag just finished
+    window._diagPickStart=null;
+    if(window._diagSel && window._diagSel.t1-window._diagSel.t0<0.5) clearDiagSel(); else updateReviewBtn();
+    return;
+  }
+  let t=diagTimeAt(ev); if(t==null) t=window._diagAnchor;   // a click (no drag)
+  if(window._diagPickStart==null){          // 1st click → set the start, wait for the end click
+    window._diagPickStart=t; window._diagSel={t0:t,t1:t}; paintDiagSel(); updateReviewBtn();
+  } else {                                   // 2nd click → set the end, finalise (click again to cancel)
+    window._diagSel={t0:Math.min(window._diagPickStart,t),t1:Math.max(window._diagPickStart,t)};
+    window._diagPickStart=null;
+    if(window._diagSel.t1-window._diagSel.t0<0.5) clearDiagSel(); else { paintDiagSel(); updateReviewBtn(); }
+  }
 }
 function paintDiagSel(){
   const sel=window._diagSel;
@@ -482,17 +509,19 @@ function paintDiagSel(){
       el.querySelector('i').style.top=(100-pct)+'%';   // dot sits on the diagonal (y = size - x)
       el.querySelector('span').textContent=txt;
     };
+    const real=(sel.t1-sel.t0)>0.05;   // until an end is chosen, show only the start (no stacked marker)
     setMark(ms, sel.t0>=t0&&sel.t0<=t1, (sel.t0-t0)/T*100, '▶ '+fmtTC(sel.t0));
-    setMark(me, sel.t1>=t0&&sel.t1<=t1, (sel.t1-t0)/T*100, fmtTC(sel.t1)+' ◀');
+    setMark(me, real&&sel.t1>=t0&&sel.t1<=t1, (sel.t1-t0)/T*100, fmtTC(sel.t1)+' ◀');
   });
 }
-function clearDiagSel(){ window._diagSel=null; paintDiagSel(); updateReviewBtn(); }
+function clearDiagSel(){ window._diagSel=null; window._diagPickStart=null; paintDiagSel(); updateReviewBtn(); }
 function diagSelRange(){ const s=window._diagSel; return (s && s.t1-s.t0>=0.5) ? s : null; }
 function updateReviewBtn(){
   const btn=document.getElementById('reviewbtn'); if(!btn) return;
   const s=diagSelRange();
-  btn.textContent=s ? `▶ Review least-confident cuts in ${fmtTC(s.t0)}–${fmtTC(s.t1)}` : '▶ Review least-confident cuts';
-  const clr=document.getElementById('diagclrbtn'); if(clr) clr.style.display=s?'':'none';
+  if(!s && window._diagPickStart!=null) btn.textContent='▶ start '+fmtTC(window._diagPickStart)+' — now click the end point';
+  else btn.textContent=s ? `▶ Review least-confident cuts in ${fmtTC(s.t0)}–${fmtTC(s.t1)}` : '▶ Review least-confident cuts';
+  const clr=document.getElementById('diagclrbtn'); if(clr) clr.style.display=(s||window._diagPickStart!=null)?'':'none';
 }
 function fixBadge(f){
   return f.labelled?'<span class="badge b-done">labelled</span>'
@@ -553,7 +582,7 @@ async function renderMovie(video){
         <button id=diagclrbtn style="display:none;padding:4px 10px" onclick="clearDiagSel()">✕ clear range</button>
         <label class=muted style="display:flex;gap:6px;align-items:center"><input type=checkbox id=diagmarks checked onchange="renderDiag()"> mark <b style="color:#e05a7a">rejected</b> / <b style="color:#3ecb7a">fix-added</b> cuts</label>
       </div>
-      <div class=muted style="margin-top:4px">shot lengths as squares along each diagonal; panels run in order (first/last 10 cuts trimmed) · <b>drag across the diagonal to scope Review Mode to a time range</b></div>
+      <div class=muted style="margin-top:4px">shot lengths as squares along each diagonal; panels run in order (first/last 10 cuts trimmed) · <b>click a start then an end point on the diagonal (or drag) to scope Review Mode to a time range</b></div>
       <div id=diagwrap>${diagPanels(m.cuts,m.start,m.end, diagMarks(m))}</div></div>`;
   } else {
     html+=`<div class=box style="margin-top:12px"><div class=sub>This movie has no base run yet. Processing runs whole-film detection (TransNetV2) — this can take a while for a full film.</div>
