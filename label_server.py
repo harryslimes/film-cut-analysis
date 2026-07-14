@@ -539,7 +539,7 @@ async function setGold(t, decision){
   bumpNcuts((cur==='reject'?1:0)-(g==='reject'?1:0));   // rejects drop cuts from the end result
   weakSlide(); renderClusterList();
 }
-function watchCut(t){ openClip(t, 2, 0.08, '@'+fmtTC(t), 'plays the 2s up to the cut and ends on the cut frame', [t], true); }
+function watchCut(t){ openClip(t, 2, 0.5, '@'+fmtTC(t), 'the cut is ~2s in; the caption marks it and holds ~0.5s after', [t], true); }
 function openClip(t, pre, post, label, note, marks, onlyMark){
   const m=window._movie;
   const q='v='+encodeURIComponent(m.video)+'&t='+t+'&pre='+pre.toFixed(2)+'&post='+post.toFixed(2);
@@ -1070,7 +1070,7 @@ def _clip_vtt(video, t, pre, post, marks=None, only_marks=False):
     if only_marks:
         out = ["WEBVTT", ""]
         for x in sorted(m for m in (marks or []) if cs <= m <= ce):
-            a = max(cs, x - 0.6)              # appear ~0.6s before the cut, hold to clip end
+            a = max(cs, x - 0.2)             # appear just before the cut and HOLD past it, so
             out += [f"{_vtt_ts(a - cs)} --> {_vtt_ts(ce - cs)}", f"Cut #{_cutno(x)}", ""]
         return "\n".join(out)
     mk = {round(x, 2) for x in (marks or [])}
