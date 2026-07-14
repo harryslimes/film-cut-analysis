@@ -264,6 +264,8 @@ HOME_PAGE = r"""<!doctype html><html><head><meta charset=utf-8><title>Cut librar
  .rng input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;pointer-events:auto;height:18px;width:18px;border-radius:50%;background:#7fb0e8;border:2px solid #141414;cursor:pointer}
  .rng input[type=range]::-moz-range-thumb{pointer-events:auto;height:16px;width:16px;border-radius:50%;background:#7fb0e8;border:2px solid #141414;cursor:pointer}
  .rng input[type=range]::-webkit-slider-runnable-track{background:none} .rng input[type=range]::-moz-range-track{background:none}
+ .rng.lolock #revlo::-webkit-slider-thumb{background:#5b6472;border:2px solid #141414;cursor:not-allowed}
+ .rng.lolock #revlo::-moz-range-thumb{background:#5b6472;cursor:not-allowed}
  .gbtn{font-size:12px;padding:5px 8px} .gbtn.on.gacc{background:#1f6f3f;border-color:#2c9;color:#eafff2}
  .gbtn.on.grej{background:#7a2d29;border-color:#c66;color:#ffe6e3}
  .overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:50;align-items:center;justify-content:center;padding:20px}
@@ -300,6 +302,27 @@ HOME_PAGE = r"""<!doctype html><html><head><meta charset=utf-8><title>Cut librar
  .tl .tick{position:absolute;top:8px;bottom:8px;width:1px;background:#3987e5;opacity:.4}
  .tl .sel{position:absolute;top:0;bottom:0;background:rgba(127,176,232,.22);border-left:2px solid #7fb0e8;border-right:2px solid #7fb0e8;pointer-events:none}
  .tl .lab{position:absolute;bottom:3px;font-size:10px;color:#bcd;pointer-events:none;background:rgba(16,16,16,.75);padding:0 3px;border-radius:3px}
+ .revwrap{display:flex;flex-direction:column;gap:10px}
+ .revhead{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+ .revhead h1{font-size:18px;margin:0;font-weight:600}
+ .revctl{display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+ .revbody{display:grid;grid-template-columns:minmax(260px,360px) 1fr;gap:14px;align-items:start}
+ .revbody.decided{grid-template-columns:minmax(440px,580px) 1fr}
+ .revqueue{max-height:78vh;overflow:auto;border:1px solid #2c2c2c;border-radius:8px;padding:6px;background:#161616}
+ .revdecided{display:grid;grid-template-columns:1fr 1fr;gap:10px;max-height:78vh;overflow:auto}
+ .revcol{border:1px solid #2c2c2c;border-radius:8px;padding:6px;background:#161616}
+ .revcolh{font-weight:600;font-size:12px;padding:4px 6px;position:sticky;top:0;background:#161616;z-index:1}
+ .revcolh.rej{color:#e0a} .revcolh.acc{color:#bfe6cd}
+ .revrow{cursor:pointer;margin:4px 0}
+ .revrow.active{border-color:#7fb0e8;background:#22314a;box-shadow:0 0 0 1px #7fb0e8 inset}
+ .revpane{position:sticky;top:12px;border:1px solid #2c2c2c;border-radius:10px;padding:12px;background:#1b1b1b}
+ .revvid{width:100%;max-height:44vh;background:#000;border-radius:6px;display:block}
+ .revframes{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
+ .revframe{margin:0}
+ .revframe img{width:100%;height:auto;min-height:120px;border-radius:6px;background:#000;display:block}
+ .revframe figcaption{font-size:12px;color:#8a929c;text-align:center;margin-top:4px}
+ .revmeta{margin-top:10px;font-size:14px}
+ .revkeys{margin-top:10px;font-size:12px;color:#777}
 </style></head><body>
 <header><a href="/" onclick="go(null,event)"><b>Cut library</b></a>
  <span class=muted id=crumb></span><span class=sp></span></header>
@@ -313,7 +336,7 @@ function fmtT(s){s=+s;const m=Math.floor(s/60),ss=s-60*m;return m>0?`${m}m${ss.t
 // corner-to-corner up the main diagonal. Colour = duration (validated blue
 // sequential ramp, dim=short → bright=long) on the dark surface.
 // core: render one diagonal from an already-prepared, sorted list of cut boundaries `cc`.
-function diagSvg(cc,size){
+function diagSvg(cc,size,marks){
   const durs=[];for(let i=0;i<cc.length-1;i++)durs.push(cc[i+1]-cc[i]);
   const T=durs.reduce((a,b)=>a+b,0);
   if(!(T>0)||!durs.length) return `<svg viewBox="0 0 ${size} ${size}" class="diag"></svg>`;
@@ -327,8 +350,15 @@ function diagSvg(cc,size){
     rects+=`<rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${s.toFixed(2)}" height="${s.toFixed(2)}" rx="0.6" fill="${col}"><title>@${fmtT(cc[i])} · ${d.toFixed(2)}s</title></rect>`;
     cum+=d;
   }
+  // optional overlay: a short line crossing the diagonal at each marked time (rejections/adds)
+  let ticks='';
+  for(const mk of (marks||[])){
+    if(mk.t<cc[0]||mk.t>cc[cc.length-1]) continue;
+    const pos=(mk.t-cc[0])*sc, off=size*0.045;   // perpendicular (+45°) tick through the point
+    ticks+=`<line x1="${(pos-off).toFixed(2)}" y1="${(size-pos-off).toFixed(2)}" x2="${(pos+off).toFixed(2)}" y2="${(size-pos+off).toFixed(2)}" stroke="${mk.color}" stroke-width="1.6" stroke-linecap="round" opacity="0.95"><title>${mk.label} @${fmtT(mk.t)}</title></line>`;
+  }
   return `<svg viewBox="0 0 ${size} ${size}" class="diag">
-    <line x1="0" y1="${size}" x2="${size}" y2="0" class="diagref"></line>${rects}</svg>`;
+    <line x1="0" y1="${size}" x2="${size}" y2="0" class="diagref"></line>${rects}${ticks}</svg>`;
 }
 // prep: interior cuts sorted, first/last 10 dropped (opening idents / end credits).
 function diagCuts(cuts,start,end){
@@ -340,19 +370,27 @@ function diagCuts(cuts,start,end){
 function diag(cuts,start,end,size){ return diagSvg(diagCuts(cuts,start,end), size||240); }
 // big view: split the film into square panels (~200 shots each) read left→right, top→bottom
 // so each shot gets far more room than one collapsed diagonal.
-function diagPanels(cuts,start,end){
+function diagPanels(cuts,start,end,marks){
   const cc=diagCuts(cuts,start,end);
   const nShots=cc.length-1;
-  if(nShots<40) return `<div class=biglabel>${diagSvg(cc,300)}</div>`;
+  const mk=seg=>((marks||[]).filter(x=>x.t>=seg[0]&&x.t<=seg[seg.length-1]));
+  if(nShots<40) return `<div class=biglabel>${diagSvg(cc,300,mk(cc))}</div>`;
   const panels=Math.max(2,Math.min(20,Math.round(nShots/200)));
   const per=Math.ceil(nShots/panels);
   let cells='';
   for(let p=0;p<panels;p++){
     const a=p*per, seg=cc.slice(a, Math.min(cc.length, a+per+1));  // +1 shares the boundary cut
     if(seg.length<2) continue;
-    cells+=`<div class=diagcell>${diagSvg(seg,180)}<div class=celllab>${fmtT(seg[0])}–${fmtT(seg[seg.length-1])}</div></div>`;
+    cells+=`<div class=diagcell>${diagSvg(seg,180,mk(seg))}<div class=celllab>${fmtT(seg[0])}–${fmtT(seg[seg.length-1])}</div></div>`;
   }
   return `<div class=diaggrid>${cells}</div>`;
+}
+function diagMarks(m){   // red = a base cut we rejected; green = a cut added by a scene fix
+  const baseSet=new Set((m.base_cuts||[]).map(t=>(+t).toFixed(3)));
+  const marks=[];
+  (m.reject_times||[]).forEach(t=>marks.push({t:+t,color:'#e05a7a',label:'rejected'}));
+  (m.cuts||[]).forEach(t=>{ if(!baseSet.has((+t).toFixed(3))) marks.push({t:+t,color:'#3ecb7a',label:'added by fix'}); });
+  return marks;
 }
 function fixBadge(f){
   return f.labelled?'<span class="badge b-done">labelled</span>'
@@ -398,45 +436,21 @@ async function renderMovie(video){
 
   if(m.processed){
     window._ncuts=m.n_cuts;
-    html+=`<div class=box style="margin-top:12px"><div class=sub>End result — base run (${esc(m.base_source)}) with saved fixes applied · <span id=ncuts>${m.n_cuts}</span> cuts · ${fmtT(m.end)}</div>
-      <div class=muted style="margin-top:4px">shot lengths as squares along each diagonal; panels run in order (first/last 10 cuts trimmed)</div>
-      ${diagPanels(m.cuts,m.start,m.end)}</div>`;
+    const ev=encodeURIComponent(m.video);
+    html+=`<div class=row style="margin:14px 0;gap:10px;flex-wrap:wrap">
+      <button class=go style="font-size:15px;padding:10px 18px" onclick="enterReview()" title="split-screen keyboard triage of the least-confident cuts">▶ Review least-confident cuts</button>
+      <button onclick="location.href='/subs?v=${ev}&fmt=srt'" title="download an .srt marking every cut in the current end result">⬇ Download .srt (base + edits)</button>
+      <button id=watchbtn onclick="toggleWatch()" title="play the whole film with the current cuts shown as subtitles">▤ Watch movie with cut subtitles</button>
+    </div>
+    <div id=watchbox style="display:none;margin-bottom:12px"></div>`;
     html+=`<div class=box style="margin-top:12px">
-      <div style="display:flex;gap:10px;align-items:center;margin-bottom:6px;flex-wrap:wrap">
-        <div style="font-weight:600">Least-confident cuts</div><span class=sp></span>
-        <div class=tabs><button id=tab_list class=on onclick="showTab('list')">List</button><button id=tab_clusters onclick="showTab('clusters')">Clusters</button></div>
+      <div class=row style="margin:0 0 4px;align-items:center;flex-wrap:wrap">
+        <div class=sub style="margin:0">End result — base run (${esc(m.base_source)}) with saved fixes applied · <span id=ncuts>${m.n_cuts}</span> cuts · ${fmtT(m.end)}</div>
+        <span class=sp></span>
+        <label class=muted style="display:flex;gap:6px;align-items:center"><input type=checkbox id=diagmarks checked onchange="renderDiag()"> mark <b style="color:#e05a7a">rejected</b> / <b style="color:#3ecb7a">fix-added</b> cuts</label>
       </div>
-      <div id=panel_list>
-        <div class=muted>Two handles set the confidence window shown — the low handle defaults to the
-          accept threshold (0.5). Accepting or rejecting a cut removes it from this list; use
-          "Decided" to revisit what you've already accepted/rejected.</div>
-        <div id=weakbands class=muted style="margin-top:6px">loading…</div>
-        <div class=tabs style="margin-top:8px"><button id=wt_und class=on onclick="weakMode('undecided')">To review</button><button id=wt_dec onclick="weakMode('decided')">Decided</button></div>
-        <div id=weakrngrow class=row style="margin-top:10px;align-items:center">
-          <span class=muted>conf</span>
-          <div class=rng id=weakrng>
-            <div class=rtrack></div><div class=rfill id=weakfill></div>
-            <input type=range id=weaklo min=0.3 max=0.85 step=0.005 value=0.5 oninput="weakSlide('lo')">
-            <input type=range id=weakhi min=0.3 max=0.85 step=0.005 value=0.85 oninput="weakSlide('hi')">
-          </div>
-          <span id=weaklabel class=muted style="min-width:190px"></span>
-        </div>
-        <div id=weaklist style="margin-top:8px;max-height:340px;overflow:auto"></div>
-      </div>
-      <div id=panel_clusters style="display:none">
-        <div class=muted>Bursts of weak cuts packed close in time — usually a flashing/strobing scene shedding
-          dozens of false cuts at once. Biggest cleanups first: one click accepts or rejects a whole burst;
-          expand a cluster to override single cuts.</div>
-        <div class=row style="margin-top:6px">
-          <label class=muted>conf below <select id=cconf onchange="loadClusters()">
-            <option>0.4</option><option>0.5</option><option selected>0.6</option><option>0.7</option><option>0.85</option></select></label>
-          <label class=muted>max gap <select id=cgap onchange="loadClusters()">
-            <option>0.75</option><option>1</option><option selected>1.5</option><option>2.5</option><option>4</option></select> s</label>
-          <span id=cinfo class=muted></span>
-        </div>
-        <div id=clusterlist style="margin-top:8px;max-height:520px;overflow:auto"></div>
-      </div>
-    </div>`;
+      <div class=muted style="margin-top:4px">shot lengths as squares along each diagonal; panels run in order (first/last 10 cuts trimmed)</div>
+      <div id=diagwrap>${diagPanels(m.cuts,m.start,m.end, diagMarks(m))}</div></div>`;
   } else {
     html+=`<div class=box style="margin-top:12px"><div class=sub>This movie has no base run yet. Processing runs whole-film detection (TransNetV2) — this can take a while for a full film.</div>
       <div class=row><button class=go id=procbtn onclick="processMovie()">Process movie</button></div>
@@ -462,7 +476,23 @@ async function renderMovie(video){
   app.innerHTML=html;
   renderFixes(m);
   setupTimeline(m);
-  if(m.processed){ loadWeak(); loadClusters(); if(location.hash==='#clusters') showTab('clusters'); }
+}
+function renderDiag(){   // re-render the diagonal, optionally overlaying rejected/added markers
+  const m=window._movie, box=document.getElementById('diagwrap');
+  const on=(document.getElementById('diagmarks')||{}).checked;
+  if(box) box.innerHTML=diagPanels(m.cuts,m.start,m.end, on?diagMarks(m):null);
+}
+function toggleWatch(){   // in-page player of the whole film with cut subtitles; NO autoplay
+  const box=document.getElementById('watchbox'), m=window._movie, ev=encodeURIComponent(m.video);
+  if(box.style.display==='none'){
+    box.style.display='';
+    box.innerHTML=`<div class=box>
+      <div class=sub style="margin:0 0 6px">Whole film with the current cuts (base + edits) as subtitles — each cut shows as "Cut #N". Not autoplaying; press play and scrub.</div>
+      <video class=watchvid controls preload=metadata playsinline crossorigin=anonymous style="width:100%;max-height:72vh;background:#000">
+        <source src="/moviefile?v=${ev}" type="video/mp4">
+        <track default kind=subtitles srclang=en label="cuts" src="/subs?v=${ev}&fmt=vtt"></video>
+      <div class=muted style="margin-top:6px">If it won't play, the source isn't a browser-native codec (only H.264/mp4 plays inline). The .srt download works regardless.</div></div>`;
+  } else { box.style.display='none'; box.innerHTML=''; }   // unload to stop the download
 }
 function showTab(which){
   document.getElementById('panel_list').style.display = which==='list'?'':'none';
@@ -478,7 +508,7 @@ async function loadWeak(){
   const bands=document.getElementById('weakbands');
   const j=await (await fetch('/api/weak?v='+encodeURIComponent(m.video))).json();
   if(!j.total){ bands.textContent='No per-cut confidence for this base run (only detector runs carry it, not imported canonicals).'; return; }
-  window._weakall=j.rows||[]; const b=j.bands;
+  window._weakall=j.rows||[]; window._weakSrc=m.video; const b=j.bands;
   bands.innerHTML=`of ${j.total} cuts — <b style="color:#e0a">&lt;0.4:</b> ${b.lt04} · <b style="color:#f0d79a">0.4–0.6:</b> ${b.b0406} · <b>0.6–0.8:</b> ${b.b0608} · <b style="color:#bfe6cd">≥0.8:</b> ${b.gte08} (solid)`;
   weakSlide();
 }
@@ -493,7 +523,7 @@ function cutRow(x){ const v=encodeURIComponent(window._movie.video); return `<di
     <img class=cthumb loading=lazy src="/frameat?v=${v}&t=${(x.time-0.15).toFixed(3)}" title="frame before">
     <img class=cthumb loading=lazy src="/frameat?v=${v}&t=${(x.time+0.15).toFixed(3)}" title="frame after">
     <div class=fn>${fmtTC(x.time)}</div>
-    <div class=sub style="margin:0;flex:1"><span class="badge ${x.kind==='gradual'?'b-prog':'b-todo'}">${x.kind}</span> conf ${x.conf}</div>
+    <div class=sub style="margin:0;flex:1"><span class="badge ${x.kind==='gradual'?'b-prog':'b-todo'}">${kindLabel(x.kind)}</span> conf ${x.conf}</div>
     <button onclick="watchCut(${x.time})">▶ watch</button>
     <button class="gbtn gacc ${x.gold==='accept'?'on':''}" onclick="setGold(${x.time},'accept')" title="gold: real cut">✓ accept</button>
     <button class="gbtn grej ${x.gold==='reject'?'on':''}" onclick="setGold(${x.time},'reject')" title="gold: not a cut">✗ reject</button>
@@ -528,15 +558,22 @@ function findClusterCut(t){
   for(const c of (window._clusters||[])){ const x=c.members.find(y=>y.time===t); if(x) return x; }
   return null;
 }
-async function setGold(t, decision){
+// core verdict writer, no toggle: dec is exactly 'accept'|'reject'|'clear'. Updates the
+// shared _weakall/cluster state so List, Clusters, and Review mode all stay in sync.
+async function applyGold(t, dec){
   const m=window._movie, row=(window._weakall||[]).find(r=>r.time===t), cm=findClusterCut(t);
   const cur=row?row.gold:(cm?cm.gold:null);
-  const dec=(cur===decision) ? 'clear' : decision;   // click again to un-set
   await fetch('/api/gold',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({video:m.video, time:t, decision:dec})});
   const g = dec==='clear' ? null : dec;
   if(row) row.gold=g; if(cm) cm.gold=g;   // a verdict moves the cut out of "To review" into "Decided"
   bumpNcuts((cur==='reject'?1:0)-(g==='reject'?1:0));   // rejects drop cuts from the end result
+  return g;
+}
+async function setGold(t, decision){   // list/cluster rows: click the current verdict again to un-set
+  const row=(window._weakall||[]).find(r=>r.time===t), cm=findClusterCut(t);
+  const cur=row?row.gold:(cm?cm.gold:null);
+  await applyGold(t, cur===decision ? 'clear' : decision);
   weakSlide(); renderClusterList();
 }
 function watchCut(t){ openClip(t, 2, 0.5, '@'+fmtTC(t), 'the cut is ~2s in; the caption marks it and holds ~0.5s after', [t], true); }
@@ -554,6 +591,283 @@ function openClip(t, pre, post, label, note, marks, onlyMark){
     <div class=muted style="margin-top:6px">Transcoding a ${Math.round(pre+post)}s clip. Muted autoplay — unmute in the controls.</div></div>`;
   ov.style.display='flex';
 }
+
+// ---- Review mode: dedicated split-screen keyboard triage ----
+// Left = queue of undecided weak cuts in the chosen conf window (weakest-first);
+// right = the active cut's clip auto-playing + looping with Accept/Reject. Reachable at
+// /?v=<video>#review. Reuses applyGold so verdicts flow back to List/Clusters/end-result.
+function kindLabel(k){ return k==='hard' ? 'abrupt cut' : (k||'unknown'); }
+function enterReview(){
+  const loEl=document.getElementById('weaklo'), hiEl=document.getElementById('weakhi');
+  window._reviewLo = loEl ? +loEl.value : 0.5;   // low handle = the acceptance threshold
+  window._reviewHi = hiEl ? +hiEl.value : 0.85;
+  window._reviewView='queue';
+  history.pushState(null,'','/?v='+encodeURIComponent(window._movie.video)+'#review');
+  window._reviewOn=true;
+  renderReview();
+}
+function reviewResetPool(){   // drop all preloaded <video> elements + their buffers
+  if(window._clipPool){ for(const [,vid] of window._clipPool){ if(vid.parentElement) vid.parentElement.removeChild(vid); } }
+  window._clipPool=new Map(); window._activeVid=null;
+  const box=document.getElementById('revprefetch'); if(box) box.remove();
+}
+function exitReview(){
+  window._reviewOn=false;
+  reviewResetPool();
+  history.pushState(null,'','/?v='+encodeURIComponent(window._movie.video));
+  renderMovie(window._movie.video);
+}
+async function renderReview(){
+  const v=new URLSearchParams(location.search).get('v');
+  const app=document.getElementById('app');
+  if(!v){ window._reviewOn=false; renderList(); return; }
+  app.innerHTML='<div class=muted>loading…</div>';
+  window._reviewOn=true;
+  if(!window._movie || window._movie.video!==v){
+    const m=await (await fetch('/api/movie?v='+encodeURIComponent(v))).json();
+    if(m.error){ app.innerHTML='<div class=muted>'+esc(m.error)+'</div>'; return; }
+    window._movie=m;
+  }
+  if(!window._weakall || window._weakSrc!==v){
+    const j=await (await fetch('/api/weak?v='+encodeURIComponent(v))).json();
+    window._weakall=j.rows||[]; window._weakSrc=v;
+  }
+  if(window._reviewLo==null){ window._reviewLo=0.5; window._reviewHi=0.85; }
+  if(window._reviewLoop==null) window._reviewLoop=true;
+  if(window._reviewView==null) window._reviewView='queue';
+  if(window._prefetchN==null) window._prefetchN=3;
+  if(window._reviewUnlock==null) window._reviewUnlock=false;
+  reviewResetPool();   // start each render with a clean preload pool
+  const m=window._movie, dec=window._reviewView==='decided';
+  document.getElementById('crumb').innerHTML='<a href="/" onclick="go(null,event)">movies</a> › <a href="/?v='+encodeURIComponent(v)+'" onclick="exitReview();return false">'+esc(m.name)+'</a> › review';
+  app.innerHTML=`<div class=revwrap>
+    <div class=revhead>
+      <button onclick="exitReview()">← back to movie</button>
+      <h1>Reviewing least-confident cuts · ${esc(m.name)}</h1>
+      <span class=sp></span><div class=muted id=revstat></div>
+    </div>
+    <div class=revctl>
+      <div class=tabs><button id=rv_queue class="${dec?'':'on'}" onclick="reviewSetView('queue')">To review</button><button id=rv_dec class="${dec?'on':''}" onclick="reviewSetView('decided')">Decided</button></div>
+      <div id=revslider class=row style="margin:0;align-items:center;${dec?'display:none':''}">
+        <span class=muted title="left handle = acceptance threshold: cuts at or above it are treated as accepted; the window between the handles is what you review">conf</span>
+        <div class="rng ${window._reviewUnlock?'':'lolock'}" id=revrng style="min-width:220px">
+          <div class=rtrack></div><div class=rfill id=revfill></div>
+          <input type=range id=revlo min=0.3 max=0.85 step=0.005 value=${window._reviewLo} ${window._reviewUnlock?'':'disabled'} oninput="reviewSlide('lo')">
+          <input type=range id=revhi min=0.3 max=0.85 step=0.005 value=${window._reviewHi} oninput="reviewSlide('hi')">
+        </div>
+        <span id=revrnglabel class=muted style="min-width:160px"></span>
+        <label class=muted style="display:flex;gap:5px;align-items:center" title="the left handle is locked at the acceptance threshold; tick to move it"><input type=checkbox id=revunlock ${window._reviewUnlock?'checked':''} onchange="toggleThreshold(this.checked)"> unlock threshold</label>
+      </div>
+      <label class=muted style="display:flex;gap:6px;align-items:center" title="how many upcoming clips to transcode ahead so advancing is instant">cache ahead
+        <input id=revpfn type=number min=0 max=8 step=1 value=${window._prefetchN} style="width:56px" onchange="setPrefetchN(this.value)"></label>
+    </div>
+    <div class="revbody ${dec?'decided':''}" id=revbody>
+      <div id=revleft></div>
+      <div class=revpane id=revpane></div>
+    </div>
+  </div>`;
+  reviewRebuild();
+  window._rai=0;
+  const MIN=0.3,MAX=0.85,f=document.getElementById('revfill');
+  if(f){ f.style.left=((window._reviewLo-MIN)/(MAX-MIN)*100)+'%'; f.style.right=((MAX-window._reviewHi)/(MAX-MIN)*100)+'%'; }
+  renderLeft(); setRngLabel(); updateStat();
+  if(window._rlist.length) loadActive();
+  else document.getElementById('revpane').innerHTML='<div class=muted>'+(dec?'No decided cuts yet — accept or reject some in the To review tab.':'No undecided cuts in this conf window. Widen the slider or press Esc to go back.')+'</div>';
+}
+// Recompute the current display list(s) from the shared _weakall. Queue view =
+// undecided cuts in the conf window (weakest-first). Decided view = split into rejected +
+// accepted (weakest-first). _rlist is the flat ordered list the active index/keys walk.
+function reviewRebuild(){
+  const all=window._weakall||[], lo=window._reviewLo, hi=window._reviewHi;
+  if(window._reviewView==='decided'){
+    window._rrej = all.filter(r=>r.gold==='reject').slice().sort((a,b)=>a.conf-b.conf);
+    window._racc = all.filter(r=>r.gold==='accept').slice().sort((a,b)=>a.conf-b.conf);
+    window._rlist = window._rrej.concat(window._racc);
+  } else {
+    window._rq = all.filter(r=>!r.gold && r.conf>=lo && r.conf<=hi).slice().sort((a,b)=>a.conf-b.conf);
+    window._rlist = window._rq;
+  }
+  if(window._rai>=window._rlist.length) window._rai=Math.max(0, window._rlist.length-1);
+}
+function revRow(x, gi){   // gi = index into _rlist (walked by arrows/verdicts)
+  const st = x.gold==='accept' ? '<span class="badge b-done">✓</span>'
+    : x.gold==='reject' ? '<span class="badge b-none">✗</span>' : '';
+  return `<div class="fixrow revrow ${gi===window._rai?'active':''}" onclick="reviewSelect(${gi})">
+    <div class=fn>${fmtTC(x.time)}</div>
+    <div class=sub style="margin:0;flex:1"><span class="badge ${x.kind==='gradual'?'b-prog':'b-todo'}">${kindLabel(x.kind)}</span> conf ${x.conf}</div>
+    ${st}</div>`;
+}
+function renderLeft(){
+  const left=document.getElementById('revleft'); if(!left) return;
+  if(window._reviewView==='decided'){
+    const rej=window._rrej||[], acc=window._racc||[], base=rej.length;
+    const col=(title,arr,off,cls)=>`<div class=revcol><div class="revcolh ${cls}">${title} (${arr.length})</div>${
+      arr.map((x,i)=>revRow(x,off+i)).join('')||'<div class=muted style="padding:10px">none</div>'}</div>`;
+    left.innerHTML=`<div class=revdecided>${col('✗ Rejected',rej,0,'rej')}${col('✓ Accepted',acc,base,'acc')}</div>`;
+  } else {
+    left.innerHTML=`<div class=revqueue id=revqueue>${
+      (window._rq||[]).map((x,i)=>revRow(x,i)).join('')||'<div class=muted style="padding:10px">Nothing to review in this window.</div>'}</div>`;
+  }
+}
+function scrollActive(){
+  const el=document.querySelector('#revleft .revrow.active');
+  if(el) el.scrollIntoView({block:'nearest'});
+}
+function reviewSelect(i){
+  if(!window._rlist||!window._rlist[i]) return;
+  window._rai=i; renderLeft(); scrollActive(); loadActive();
+}
+function reviewMove(d){
+  const list=window._rlist; if(!list||!list.length) return;
+  window._rai=Math.max(0, Math.min(list.length-1, window._rai+d));
+  renderLeft(); scrollActive(); loadActive();
+}
+function toggleThreshold(on){   // the low handle is the acceptance threshold; locked unless unlocked
+  window._reviewUnlock=on;
+  const lo=document.getElementById('revlo'); if(lo) lo.disabled=!on;
+  const rng=document.getElementById('revrng'); if(rng) rng.classList.toggle('lolock', !on);
+}
+function reviewSlide(which){   // conf window (queue view only): refilter live, keep active if still in window
+  if(which==='lo' && !window._reviewUnlock) return;   // low handle locked at the acceptance threshold
+  const loEl=document.getElementById('revlo'), hiEl=document.getElementById('revhi');
+  if(!loEl||!hiEl) return;
+  let lo=+loEl.value, hi=+hiEl.value;
+  if(lo>hi){ if(which==='hi') loEl.value=(lo=hi); else hiEl.value=(hi=lo); }   // handles can't cross
+  window._reviewLo=lo; window._reviewHi=hi;
+  const MIN=0.3,MAX=0.85,f=document.getElementById('revfill');
+  if(f){ f.style.left=((lo-MIN)/(MAX-MIN)*100)+'%'; f.style.right=((MAX-hi)/(MAX-MIN)*100)+'%'; }
+  const prev=window._rlist?window._rlist[window._rai]:null, prevT=prev?prev.time:null;
+  reviewRebuild();
+  const idx=window._rlist.findIndex(r=>r.time===prevT);
+  window._rai = idx<0 ? 0 : idx;
+  renderLeft(); setRngLabel(); updateStat();
+  if(idx<0) loadActive();   // active fell out of the window → load the new top
+}
+function setRngLabel(){
+  const all=window._weakall||[], lo=window._reviewLo, hi=window._reviewHi;
+  const n=all.filter(r=>!r.gold && r.conf>=lo && r.conf<=hi).length;
+  const el=document.getElementById('revrnglabel');
+  if(el) el.innerHTML=`<b title="acceptance threshold">${lo.toFixed(2)}</b>–${hi.toFixed(2)} · ${n} to review`;
+}
+function reviewSetView(view){
+  window._reviewView=view; window._rai=0;
+  const dec=view==='decided';
+  document.getElementById('revbody').classList.toggle('decided', dec);
+  const sl=document.getElementById('revslider'); if(sl) sl.style.display=dec?'none':'';
+  document.getElementById('rv_queue').classList.toggle('on', !dec);
+  document.getElementById('rv_dec').classList.toggle('on', dec);
+  reviewRebuild(); renderLeft(); updateStat();
+  if(window._rlist.length) loadActive();
+  else document.getElementById('revpane').innerHTML='<div class=muted>'+(dec?'No decided cuts yet.':'Nothing to review in this window.')+'</div>';
+}
+// A real, fully-preloaded <video> per cut, kept alive in window._clipPool so advancing to a
+// prefetched row SWAPS in an already-buffered element (no re-fetch / re-transcode). The pool
+// is bounded to the active row plus the N ahead; everything else is evicted.
+function clipVideoFor(x){
+  let vid=window._clipPool.get(x.time);
+  if(!vid){
+    const v=encodeURIComponent(window._movie.video);
+    const cq='v='+v+'&t='+x.time+'&pre=2.00&post=0.50', vq=cq+'&mark='+x.time.toFixed(3)+'&only=1';
+    vid=document.createElement('video');
+    vid.className='revvid'; vid.controls=true; vid.muted=true; vid.playsInline=true;
+    vid.preload='auto'; vid.loop=!!window._reviewLoop;
+    const s=document.createElement('source'); s.src='/clip?'+cq; s.type='video/mp4'; vid.appendChild(s);
+    const tr=document.createElement('track'); tr.default=true; tr.kind='subtitles'; tr.srclang='en'; tr.src='/clipvtt?'+vq; vid.appendChild(tr);
+    window._clipPool.set(x.time, vid);
+  }
+  return vid;
+}
+function loadActive(){
+  const list=window._rlist, i=window._rai, m=window._movie, pane=document.getElementById('revpane');
+  if(!pane) return;
+  if(!window._clipPool) window._clipPool=new Map();
+  if(!list||!list[i]){ pane.innerHTML='<div class=muted>Nothing selected.</div>'; return; }
+  const x=list[i], v=encodeURIComponent(m.video);
+  const vd = x.gold==='accept' ? '<span class="badge b-done">accepted</span>'
+    : x.gold==='reject' ? '<span class="badge b-none">rejected</span>' : '';
+  pane.innerHTML=`
+    <div id=revvidslot></div>
+    <div class=revframes>
+      <figure class=revframe><img loading=lazy src="/frameat?v=${v}&t=${(x.time-0.15).toFixed(3)}&w=480"><figcaption>before cut</figcaption></figure>
+      <figure class=revframe><img loading=lazy src="/frameat?v=${v}&t=${(x.time+0.15).toFixed(3)}&w=480"><figcaption>after cut</figcaption></figure>
+    </div>
+    <div class=revmeta><b>${fmtTC(x.time)}</b> · <span class="badge ${x.kind==='gradual'?'b-prog':'b-todo'}">${kindLabel(x.kind)}</span> · conf ${x.conf} ${vd}</div>
+    <div class=row>
+      <button class="gbtn gacc ${x.gold==='accept'?'on':''}" onclick="reviewVerdict('accept')">✓ Accept (A)</button>
+      <button class="gbtn grej ${x.gold==='reject'?'on':''}" onclick="reviewVerdict('reject')">✗ Reject (R)</button>
+      <button onclick="replayClip()">↻ Replay (Space)</button>
+      <button onclick="reviewMove(1)">next ↓ (J)</button>
+      <label class=muted style="display:flex;gap:5px;align-items:center;border:1px solid #444;border-radius:6px;padding:6px 9px"><input type=checkbox ${window._reviewLoop?'checked':''} onchange="toggleLoop(this.checked)"> loop</label>
+      <button onclick="unmuteClip()">🔊 unmute</button>
+    </div>
+    <div class=revkeys>${window._reviewView==='decided'
+      ? 'Decided view — A/R change the verdict · U send back to review · J/↓ next · K/↑ prev · Space replay · Esc back'
+      : 'A accept · R reject (both drop it from the list) · J/↓ next · K/↑ prev · Space replay · U undo · Esc back'}</div>`;
+  // swap the (already-preloaded, if prefetched) video element into the slot and play it
+  const vid=clipVideoFor(x);
+  if(window._activeVid && window._activeVid!==vid) window._activeVid.removeAttribute('id');
+  window._activeVid=vid; vid.id='revvid'; vid.loop=!!window._reviewLoop;
+  document.getElementById('revvidslot').appendChild(vid);
+  try{ vid.currentTime=0; }catch(e){}
+  const p=vid.play(); if(p&&p.catch) p.catch(()=>{});
+  prefetchAhead();
+}
+function prefetchAhead(){   // preload the active row + the next N (default 3), evict the rest
+  const list=window._rlist||[], i=window._rai, N=window._prefetchN||3;
+  if(!window._clipPool) window._clipPool=new Map();
+  let box=document.getElementById('revprefetch');
+  if(!box){ box=document.createElement('div'); box.id='revprefetch';
+    box.style.cssText='position:absolute;left:-9999px;top:0;width:1px;height:1px;overflow:hidden'; document.body.appendChild(box); }
+  const want=new Set();
+  for(let k=-1;k<=N;k++){ const x=list[i+k]; if(x) want.add(x.time); }  // prev + active..+N stay cached
+  for(let k=1;k<=N;k++){ const x=list[i+k]; if(!x) continue;            // build + park the upcoming ones
+    const vid=clipVideoFor(x);
+    if(vid.id==='revvid') continue;                 // the active element lives in the pane, not the box
+    if(vid.parentElement!==box){ vid.removeAttribute('id'); box.appendChild(vid); }
+  }
+  for(const [t,vid] of window._clipPool){            // evict anything outside the window to bound memory
+    if(!want.has(t)){ if(vid.parentElement) vid.parentElement.removeChild(vid); window._clipPool.delete(t); }
+  }
+}
+function setPrefetchN(n){ window._prefetchN=Math.max(0, Math.min(8, +n||0)); prefetchAhead(); }
+// One verdict handler for both views. Queue view: the cut leaves the list, the one below
+// slides into its slot and becomes active. Decided view: it moves column (accept↔reject) or,
+// on 'clear', leaves Decided entirely; active stays on the same cut when it survives.
+async function reviewVerdict(decision){
+  const list=window._rlist, i=window._rai, cur=list&&list[i]; if(!cur) return;
+  const wasIdx=i, curT=cur.time;
+  await applyGold(curT, decision);   // cur is a _weakall reference → its .gold updates in place
+  reviewRebuild();
+  let idx=window._rlist.findIndex(r=>r.time===curT);      // still visible? keep it active
+  if(idx<0) idx=Math.min(wasIdx, window._rlist.length-1); // it left this list → take the slot below
+  window._rai=Math.max(0, idx);
+  renderLeft(); scrollActive(); updateStat();
+  if(window._rlist.length) loadActive();
+  else document.getElementById('revpane').innerHTML='<div class=muted>'+(window._reviewView==='decided'?'No decided cuts.':'Queue clear — every cut in this window is decided. Widen the slider or press Esc.')+'</div>';
+}
+function updateStat(){
+  const all=window._weakall||[], lo=window._reviewLo, hi=window._reviewHi;
+  const left=all.filter(r=>!r.gold && r.conf>=lo && r.conf<=hi).length;
+  const nA=all.filter(r=>r.gold==='accept').length, nR=all.filter(r=>r.gold==='reject').length;
+  const el=document.getElementById('revstat');
+  if(el) el.innerHTML=`${left} left · conf ${lo.toFixed(2)}–${hi.toFixed(2)} · <span style="color:#bfe6cd">${nA} accepted</span> · <span style="color:#e0a">${nR} rejected</span>`;
+}
+function replayClip(){ const vid=document.getElementById('revvid'); if(vid){ vid.currentTime=0; vid.play(); } }
+function toggleLoop(on){ window._reviewLoop=on; const vid=document.getElementById('revvid'); if(vid) vid.loop=on; }
+function unmuteClip(){ const vid=document.getElementById('revvid'); if(vid){ vid.muted=false; vid.play(); } }
+document.addEventListener('keydown', e=>{
+  if(!window._reviewOn) return;
+  const tag=(e.target.tagName||'').toLowerCase();
+  if(tag==='input'||tag==='textarea'||tag==='select') return;
+  const k=e.key;
+  if(k==='a'||k==='A'){ e.preventDefault(); reviewVerdict('accept'); }
+  else if(k==='r'||k==='R'){ e.preventDefault(); reviewVerdict('reject'); }
+  else if(k==='j'||k==='J'||k==='ArrowDown'){ e.preventDefault(); reviewMove(1); }
+  else if(k==='k'||k==='K'||k==='ArrowUp'){ e.preventDefault(); reviewMove(-1); }
+  else if(k===' '){ e.preventDefault(); replayClip(); }
+  else if(k==='u'||k==='U'||k==='Backspace'){ e.preventDefault(); reviewVerdict('clear'); }
+  else if(k==='Escape'){ e.preventDefault(); exitReview(); }
+});
 
 // ---- clusters view ----
 async function loadClusters(){
@@ -735,6 +1049,8 @@ function go(video, ev){
 }
 function route(){
   const v=new URLSearchParams(location.search).get('v');
+  if(v && location.hash==='#review'){ renderReview(); return; }
+  window._reviewOn=false;
   if(v) renderMovie(v); else renderList();
 }
 window.onpopstate=route;
@@ -1135,7 +1451,57 @@ def _movie_detail(video, probe=False):
             "processed": source is not None, "base_source": source,
             "base_cuts": base, "cuts": end, "start": 0.0, "end": span_end,
             "duration": duration or span_end, "n_cuts": len(end), "fixes": fixes,
-            "gold": {"accept": len(gold["accept"]), "reject": len(gold["reject"])}}
+            "gold": {"accept": len(gold["accept"]), "reject": len(gold["reject"])},
+            "reject_times": sorted(rej)}   # times dropped from the end result (for the viz)
+
+
+def _end_cuts(video):
+    """The current end result as a plain sorted cut list: base run + saved scene fixes, with
+    gold-rejected cuts removed. Returns (cuts, source|None) -- source is None if unprocessed."""
+    base, source = _base_cuts(video)
+    if source is None:
+        return [], None
+    end = _end_result(base, _movie_fixes(video))
+    rej = {round(t, 3) for t in _load_gold(video)["reject"]}
+    if rej:
+        end = [t for t in end if round(t, 3) not in rej]
+    return sorted(end), source
+
+
+def _hms(s):
+    s = int(s)
+    return f"{s // 3600}:{s % 3600 // 60:02d}:{s % 60:02d}"
+
+
+def _srt_ts(s):
+    s = max(0.0, s)
+    h = int(s // 3600); m = int(s % 3600 // 60)
+    return f"{h:02d}:{m:02d}:{s % 60:06.3f}".replace(".", ",")
+
+
+def _movie_subs(video, fmt="vtt"):
+    """Subtitle track for the whole film marking every end-result cut as "Cut #N h:mm:ss".
+    fmt 'vtt' for an inline <track>, 'srt' for a downloadable file. Each caption shows at its
+    cut and holds up to 0.8s (never overlapping the next cut)."""
+    cuts, _ = _end_cuts(video)
+    hold = 0.8
+    if fmt == "srt":
+        out = []
+        for i, t in enumerate(cuts):
+            nxt = cuts[i + 1] if i + 1 < len(cuts) else t + hold
+            b = t + min(hold, max(0.2, nxt - t))
+            out.append(f"{i + 1}\n{_srt_ts(t)} --> {_srt_ts(b)}\nCut #{i + 1}  {_hms(t)}\n")
+        return "\n".join(out)
+    out = ["WEBVTT", ""]
+    for i, t in enumerate(cuts):
+        nxt = cuts[i + 1] if i + 1 < len(cuts) else t + hold
+        b = t + min(hold, max(0.2, nxt - t))
+        out += [f"{_vtt_ts(t)} --> {_vtt_ts(b)}", f"Cut #{i + 1}  {_hms(t)}", ""]
+    return "\n".join(out)
+
+
+_VIDEO_MIME = {".mp4": "video/mp4", ".m4v": "video/mp4", ".webm": "video/webm",
+               ".mkv": "video/x-matroska", ".mov": "video/quicktime", ".avi": "video/x-msvideo"}
 
 
 def _all_movies():
@@ -1270,6 +1636,50 @@ class H(BaseHTTPRequestHandler):
     def _send(self, code, ctype, body):
         self.send_response(code); self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+
+    def _serve_file_range(self, path):
+        """Stream a media file with HTTP Range support so a browser <video> can seek/scrub the
+        whole movie. Plays natively only for browser-friendly codecs (H.264/mp4)."""
+        size = os.path.getsize(path)
+        ctype = _VIDEO_MIME.get(os.path.splitext(path)[1].lower(), "application/octet-stream")
+        rng = self.headers.get("Range", "")
+        start, end = 0, size - 1
+        partial = False
+        if rng.startswith("bytes="):
+            a, _, b = rng[len("bytes="):].split(",")[0].partition("-")
+            try:
+                if a:
+                    start = max(0, int(a)); end = int(b) if b else size - 1
+                elif b:                       # suffix range: last N bytes
+                    start = max(0, size - int(b))
+                end = min(end, size - 1)
+                if start <= end:
+                    partial = True
+            except ValueError:
+                partial = False
+        length = end - start + 1 if partial else size
+        self.send_response(206 if partial else 200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Length", str(length))
+        if partial:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.end_headers()
+        if self.command == "HEAD":
+            return
+        with open(path, "rb") as f:
+            if partial:
+                f.seek(start)
+            remaining = length
+            while remaining > 0:
+                chunk = f.read(min(65536, remaining))
+                if not chunk:
+                    break
+                try:
+                    self.wfile.write(chunk)
+                except (BrokenPipeError, ConnectionResetError):
+                    break
+                remaining -= len(chunk)
     def _json(self, code, obj):
         self._send(code, "application/json", json.dumps(obj).encode())
 
@@ -1306,6 +1716,27 @@ class H(BaseHTTPRequestHandler):
             except ValueError:
                 return self._json(400, {"error": "bad params"})
             return self._json(200, _cut_clusters(v, conf, gap, msz))
+        if p == "/subs":
+            v = qs.get("v", [None])[0]
+            if not (v and os.path.isfile(v)):
+                return self._send(404, "text/plain", b"unknown movie")
+            fmt = "srt" if qs.get("fmt", ["vtt"])[0] == "srt" else "vtt"
+            body = _movie_subs(v, fmt).encode()
+            if fmt == "srt":
+                self.send_response(200)
+                self.send_header("Content-Type", "application/x-subrip; charset=utf-8")
+                self.send_header("Content-Disposition", f'attachment; filename="{_movie_slug(v)}.srt"')
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers(); self.wfile.write(body)
+                return
+            return self._send(200, "text/vtt; charset=utf-8", body)
+
+        if p == "/moviefile":
+            v = qs.get("v", [None])[0]
+            if not (v and os.path.isfile(v)):
+                return self._send(404, "text/plain", b"unknown movie")
+            return self._serve_file_range(v)
+
         if p == "/frameat":
             v = qs.get("v", [None])[0]
             if not (v and os.path.isfile(v)):
@@ -1314,7 +1745,12 @@ class H(BaseHTTPRequestHandler):
                 t = max(0.0, float(qs["t"][0]))
             except (KeyError, ValueError):
                 return self._send(400, "text/plain", b"bad t")
-            frames = _decode_frames(v, t, 1, width=150)
+            try:
+                w = int(float(qs.get("w", ["150"])[0]))
+            except ValueError:
+                w = 150
+            w = max(60, min(960, w - (w % 2)))   # even width for yuv420; clamp to sane range
+            frames = _decode_frames(v, t, 1, width=w)
             if not frames:
                 return self._send(404, "text/plain", b"decode failed")
             return self._send(200, "image/jpeg", base64.b64decode(frames[0]))
