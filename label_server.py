@@ -347,7 +347,7 @@ function diagSvg(cc,size,marks){
   for(let i=0;i<durs.length;i++){
     const d=durs[i], s=Math.max(d*sc,1), x=cum*sc, y=size-(cum+d)*sc;
     const col=RAMP[Math.round(((logs[i]-lo)/span)*(RAMP.length-1))];
-    rects+=`<rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${s.toFixed(2)}" height="${s.toFixed(2)}" rx="0.6" fill="${col}"><title>@${fmtT(cc[i])} · ${d.toFixed(2)}s</title></rect>`;
+    rects+=`<rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${s.toFixed(2)}" height="${s.toFixed(2)}" rx="0.6" fill="${col}"><title>@${fmtTC(cc[i])} · ${d.toFixed(2)}s</title></rect>`;
     cum+=d;
   }
   // optional overlay: a short line crossing the diagonal at each marked time (rejections/adds)
@@ -355,7 +355,7 @@ function diagSvg(cc,size,marks){
   for(const mk of (marks||[])){
     if(mk.t<cc[0]||mk.t>cc[cc.length-1]) continue;
     const pos=(mk.t-cc[0])*sc, off=size*0.045;   // perpendicular (+45°) tick through the point
-    ticks+=`<line x1="${(pos-off).toFixed(2)}" y1="${(size-pos-off).toFixed(2)}" x2="${(pos+off).toFixed(2)}" y2="${(size-pos+off).toFixed(2)}" stroke="${mk.color}" stroke-width="1.6" stroke-linecap="round" opacity="0.95"><title>${mk.label} @${fmtT(mk.t)}</title></line>`;
+    ticks+=`<line x1="${(pos-off).toFixed(2)}" y1="${(size-pos-off).toFixed(2)}" x2="${(pos+off).toFixed(2)}" y2="${(size-pos+off).toFixed(2)}" stroke="${mk.color}" stroke-width="1.6" stroke-linecap="round" opacity="0.95"><title>${mk.label} @${fmtTC(mk.t)}</title></line>`;
   }
   return `<svg viewBox="0 0 ${size} ${size}" class="diag">
     <line x1="0" y1="${size}" x2="${size}" y2="0" class="diagref"></line>${rects}${ticks}</svg>`;
@@ -381,7 +381,7 @@ function diagPanels(cuts,start,end,marks){
   for(let p=0;p<panels;p++){
     const a=p*per, seg=cc.slice(a, Math.min(cc.length, a+per+1));  // +1 shares the boundary cut
     if(seg.length<2) continue;
-    cells+=`<div class=diagcell>${diagSvg(seg,180,mk(seg))}<div class=celllab>${fmtT(seg[0])}–${fmtT(seg[seg.length-1])}</div></div>`;
+    cells+=`<div class=diagcell>${diagSvg(seg,180,mk(seg))}<div class=celllab>${fmtTC(seg[0])}–${fmtTC(seg[seg.length-1])}</div></div>`;
   }
   return `<div class=diaggrid>${cells}</div>`;
 }
