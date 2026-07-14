@@ -539,7 +539,7 @@ async function setGold(t, decision){
   bumpNcuts((cur==='reject'?1:0)-(g==='reject'?1:0));   // rejects drop cuts from the end result
   weakSlide(); renderClusterList();
 }
-function watchCut(t){ openClip(t, 3, 0, '@'+fmtTC(t), 'plays the 3s up to the cut and ends on the cut frame', [t], true); }
+function watchCut(t){ openClip(t, 1, 0.08, '@'+fmtTC(t), 'plays the 1s up to the cut and ends on the cut frame', [t], true); }
 function openClip(t, pre, post, label, note, marks, onlyMark){
   const m=window._movie;
   const q='v='+encodeURIComponent(m.video)+'&t='+t+'&pre='+pre.toFixed(2)+'&post='+post.toFixed(2);
@@ -1064,13 +1064,11 @@ def _clip_vtt(video, t, pre, post, marks=None, only_marks=False):
     cuts = sorted(_base_cuts(video)[0])
     cs, ce = max(0.0, t - pre), t + post
     if only_marks:
-        out = ["WEBVTT", ""]
-        for x in sorted(m for m in (marks or []) if cs <= m <= ce):
-            a = max(cs, x - 1.0)                       # caption the ~1s leading into the cut
-            if x - a < 0.05:
-                continue
-            out += [f"{_vtt_ts(a - cs)} --> {_vtt_ts(x - cs)}", "◆ THIS CUT", ""]
-        return "\n".join(out)
+        # single-cut watch: caption the WHOLE clip so "◆ THIS CUT" is visible on every frame
+        # (including the cut frame at the end), regardless of when the track finishes loading.
+        if any(cs <= m <= ce for m in (marks or [])):
+            return "WEBVTT\n\n" + f"{_vtt_ts(0)} --> {_vtt_ts(ce - cs + 0.5)}\n◆ THIS CUT\n"
+        return "WEBVTT\n"
     mk = {round(x, 2) for x in (marks or [])}
     bounds = [cs] + [c for c in cuts if cs < c < ce] + [ce]
     out = ["WEBVTT", ""]
@@ -1344,9 +1342,15 @@ class H(BaseHTTPRequestHandler):
             except (KeyError, ValueError):
                 return self._send(400, "text/plain", b"bad params")
             # transcode a short window to browser-safe H.264 mp4 (works for any source
-            # container/codec, incl. mkv/hevc), streamed straight to the client.
-            cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-ss", str(max(0.0, t - pre)),
-                   "-t", str(pre + post), "-i", v, "-vf", "scale='min(854,iw)':-2",
+            # container/codec, incl. mkv/hevc), streamed straight to the client. Two-stage
+            # seek: a fast keyframe seek before -i, then an ACCURATE fine seek after -i, so
+            # the window is exactly [t-pre, t-pre+dur] -- otherwise a keyframe-rounded start
+            # drifts the clip (and the subtitle timed to it) off by up to a GOP.
+            start = max(0.0, t - pre)
+            coarse = max(0.0, start - 5.0)
+            cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error",
+                   "-ss", str(coarse), "-i", v, "-ss", str(start - coarse), "-t", str(pre + post),
+                   "-vf", "scale='min(854,iw)':-2",
                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "24", "-c:a", "aac",
                    "-movflags", "frag_keyframe+empty_moov", "-f", "mp4", "pipe:1"]
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
