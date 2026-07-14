@@ -1070,8 +1070,9 @@ def _clip_vtt(video, t, pre, post, marks=None, only_marks=False):
     if only_marks:
         out = ["WEBVTT", ""]
         for x in sorted(m for m in (marks or []) if cs <= m <= ce):
-            a = max(cs, x - 0.2)             # appear just before the cut and HOLD past it, so
-            out += [f"{_vtt_ts(a - cs)} --> {_vtt_ts(ce - cs)}", f"Cut #{_cutno(x)}", ""]
+            # appear exactly AT the cut (no lead -- that read as "too early") and HOLD through
+            # the tail after it, so it can't vanish before a slightly-late (dissolve) cut.
+            out += [f"{_vtt_ts(x - cs)} --> {_vtt_ts(ce - cs)}", f"Cut #{_cutno(x)}", ""]
         return "\n".join(out)
     mk = {round(x, 2) for x in (marks or [])}
     bounds = [cs] + [c for c in cuts if cs < c < ce] + [ce]
