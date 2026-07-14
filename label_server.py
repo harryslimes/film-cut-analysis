@@ -258,7 +258,16 @@ HOME_PAGE = r"""<!doctype html><html><head><meta charset=utf-8><title>Cut librar
  .diagbig{max-width:520px;margin:10px auto 0;cursor:crosshair;user-select:none}
  .diagcell{position:relative} .diagcell.big{max-width:520px;margin:0 auto}
  .diagcell .celllab{font-size:10px;color:#7d8590;text-align:center;margin-top:2px}
- .diagselband{position:absolute;top:0;bottom:18px;background:rgba(127,176,232,.28);border-left:2px solid #7fb0e8;border-right:2px solid #7fb0e8;border-radius:2px;display:none;pointer-events:none}
+ .diagselband{position:absolute;top:0;bottom:18px;background:rgba(127,176,232,.42);outline:1px solid rgba(127,176,232,.7);border-radius:2px;display:none;pointer-events:none;z-index:1}
+ .diagmark{position:absolute;top:0;bottom:18px;width:0;display:none;pointer-events:none;z-index:3}
+ .diagmark.start{border-left:3px solid #39d98a;box-shadow:0 0 4px #39d98a} .diagmark.end{border-left:3px solid #ffb454;box-shadow:0 0 4px #ffb454}
+ .diagmark span{position:absolute;top:0;left:0;transform:translateX(-50%);font-size:10px;line-height:1.5;padding:0 4px;border-radius:3px;white-space:nowrap;font-weight:700;z-index:1}
+ .diagmark.start span{background:#1f7a4a;color:#eafff2} .diagmark.end span{background:#8a5a1a;color:#fff2df}
+ .diagmark i,.diagguide i{position:absolute;left:0;width:9px;height:9px;border-radius:50%;transform:translate(-50%,-50%);border:1.5px solid #0d0d0d}
+ .diagmark.start i{background:#39d98a} .diagmark.end i{background:#ffb454}
+ .diagguide{position:absolute;top:0;bottom:18px;width:0;border-left:1px dashed rgba(207,224,255,.6);display:none;pointer-events:none;z-index:2}
+ .diagguide i{background:#cfe0ff}
+ .diagguide span{position:absolute;top:0;left:0;transform:translateX(-50%);font-size:9px;padding:0 3px;border-radius:3px;background:#2a3346;color:#cfe0ff;white-space:nowrap;font-weight:600}
  .cthumb{height:52px;width:auto;border-radius:3px;background:#000;flex:none}
  .rng{position:relative;flex:1;min-width:240px;height:26px}
  .rng .rtrack{position:absolute;left:0;right:0;top:11px;height:4px;background:#333;border-radius:2px}
@@ -378,12 +387,15 @@ function diag(cuts,start,end,size){ return diagSvg(diagCuts(cuts,start,end), siz
 function diagCell(seg,size,marks,big){
   const mk=(marks||[]).filter(x=>x.t>=seg[0]&&x.t<=seg[seg.length-1]);
   return `<div class="diagcell${big?' big':''}" data-t0="${seg[0]}" data-t1="${seg[seg.length-1]}">
-    <div class=diagselband></div>${diagSvg(seg,size,mk)}<div class=celllab>${fmtTC(seg[0])}–${fmtTC(seg[seg.length-1])}</div></div>`;
+    <div class=diagselband></div>
+    <div class="diagmark start"><i></i><span></span></div><div class="diagmark end"><i></i><span></span></div>
+    <div class=diagguide><i></i><span></span></div>
+    ${diagSvg(seg,size,mk)}<div class=celllab>${fmtTC(seg[0])}–${fmtTC(seg[seg.length-1])}</div></div>`;
 }
 function diagPanels(cuts,start,end,marks){
   const cc=diagCuts(cuts,start,end);
   const nShots=cc.length-1;
-  if(nShots<40) return `<div class=diagbig onmousedown="diagDown(event)">${diagCell(cc,300,marks,true)}</div>`;
+  if(nShots<40) return `<div class=diagbig onmousedown="diagDown(event)" onmousemove="diagHover(event)" onmouseleave="diagHideGuides()">${diagCell(cc,300,marks,true)}</div>`;
   const panels=Math.max(2,Math.min(20,Math.round(nShots/200)));
   const per=Math.ceil(nShots/panels);
   let cells='';
@@ -392,7 +404,7 @@ function diagPanels(cuts,start,end,marks){
     if(seg.length<2) continue;
     cells+=diagCell(seg,180,marks);
   }
-  return `<div class=diaggrid onmousedown="diagDown(event)">${cells}</div>`;
+  return `<div class=diaggrid onmousedown="diagDown(event)" onmousemove="diagHover(event)" onmouseleave="diagHideGuides()">${cells}</div>`;
 }
 function diagMarks(m){   // red = a base cut we rejected; green = a cut added by a scene fix
   const baseSet=new Set((m.base_cuts||[]).map(t=>(+t).toFixed(3)));
@@ -402,14 +414,38 @@ function diagMarks(m){   // red = a base cut we rejected; green = a cut added by
   return marks;
 }
 // ---- drag a time range across the diagonal; the Review button then scopes to it ----
-function diagTimeAt(ev){
-  const cell=ev.target.closest && ev.target.closest('.diagcell'); if(!cell) return null;
-  const svg=cell.querySelector('svg'); if(!svg) return null;
-  const r=svg.getBoundingClientRect(); if(r.width<=0) return null;
-  const t0=+cell.dataset.t0, t1=+cell.dataset.t1;
-  let f=(ev.clientX-r.left)/r.width; f=Math.max(0,Math.min(1,f));   // x is linear in time
-  return t0+f*(t1-t0);
+// Map a pointer to a point on the diagonal. You don't click ON the line: the x-position drops
+// straight down/up to where it intersects the diagonal (x is linear in time), so anywhere in the
+// panel's column works. Uses the panel under the cursor, else the nearest by centre (so a drag
+// that strays into a gap/below the grid still tracks the closest panel).
+function diagPick(ev){
+  const cells=document.querySelectorAll('#diagwrap .diagcell');
+  let over=null, best=null, bestD=Infinity;
+  for(const cell of cells){
+    const svg=cell.querySelector('svg'); if(!svg) continue;
+    const r=svg.getBoundingClientRect(); if(r.width<=0) continue;
+    if(ev.clientX>=r.left&&ev.clientX<=r.right&&ev.clientY>=r.top&&ev.clientY<=r.bottom){ over={cell,r}; break; }
+    const cx=r.left+r.width/2, cy=r.top+r.height/2, d=(ev.clientX-cx)**2+(ev.clientY-cy)**2;
+    if(d<bestD){ bestD=d; best={cell,r}; }
+  }
+  const p=over||best; if(!p) return null;
+  const t0=+p.cell.dataset.t0, t1=+p.cell.dataset.t1;
+  let f=(ev.clientX-p.r.left)/p.r.width; f=Math.max(0,Math.min(1,f));
+  return {cell:p.cell, f, t:t0+f*(t1-t0)};
 }
+function diagTimeAt(ev){ const p=diagPick(ev); return p?p.t:null; }
+// faint guide following the cursor: a vertical line + a dot where it meets the diagonal + the time
+function diagHover(ev){
+  const p=diagPick(ev);
+  document.querySelectorAll('#diagwrap .diagguide').forEach(g=>{ if(!p||g.parentElement!==p.cell) g.style.display='none'; });
+  if(!p) return;
+  const g=p.cell.querySelector('.diagguide'); if(!g) return;
+  const pct=p.f*100;
+  g.style.display='block'; g.style.left=pct+'%';
+  g.querySelector('i').style.top=(100-pct)+'%';   // the diagonal is y = size - x
+  g.querySelector('span').textContent=fmtTC(p.t);
+}
+function diagHideGuides(){ if(window._diagDragging) return; document.querySelectorAll('#diagwrap .diagguide').forEach(g=>g.style.display='none'); }
 function diagDown(ev){
   const t=diagTimeAt(ev); if(t==null) return;
   ev.preventDefault();
@@ -420,7 +456,7 @@ function diagMoveDoc(ev){
   const t=diagTimeAt(ev); if(t==null) return;
   const a=window._diagAnchor;
   window._diagSel={t0:Math.min(a,t),t1:Math.max(a,t)};
-  paintDiagSel(); updateReviewBtn();
+  paintDiagSel(); updateReviewBtn(); diagHover(ev);   // keep the guide on the cursor while dragging
 }
 function diagUpDoc(){
   if(!window._diagDragging) return;
@@ -431,11 +467,23 @@ function diagUpDoc(){
 function paintDiagSel(){
   const sel=window._diagSel;
   document.querySelectorAll('#diagwrap .diagcell').forEach(cell=>{
-    const band=cell.querySelector('.diagselband'); if(!band) return;
+    const band=cell.querySelector('.diagselband'), ms=cell.querySelector('.diagmark.start'), me=cell.querySelector('.diagmark.end');
     const t0=+cell.dataset.t0, t1=+cell.dataset.t1, T=t1-t0;
-    if(!sel||T<=0||sel.t1<=t0||sel.t0>=t1){ band.style.display='none'; return; }
-    const a=Math.max(sel.t0,t0), b=Math.min(sel.t1,t1);
-    band.style.display=''; band.style.left=((a-t0)/T*100)+'%'; band.style.right=((t1-b)/T*100)+'%';
+    const hide=el=>{ if(el) el.style.display='none'; };
+    if(!sel||T<=0){ hide(band); hide(ms); hide(me); return; }
+    if(band){ if(sel.t1<=t0||sel.t0>=t1){ band.style.display='none'; } else {
+      const a=Math.max(sel.t0,t0), b=Math.min(sel.t1,t1);
+      band.style.display='block'; band.style.left=((a-t0)/T*100)+'%'; band.style.right=((t1-b)/T*100)+'%'; } }
+    // start (green) / end (amber) markers: vertical line + a dot on the diagonal + timecode flag
+    const setMark=(el,inCell,pct,txt)=>{
+      if(!el) return;
+      if(!inCell){ el.style.display='none'; return; }
+      el.style.display='block'; el.style.left=pct+'%';
+      el.querySelector('i').style.top=(100-pct)+'%';   // dot sits on the diagonal (y = size - x)
+      el.querySelector('span').textContent=txt;
+    };
+    setMark(ms, sel.t0>=t0&&sel.t0<=t1, (sel.t0-t0)/T*100, '▶ '+fmtTC(sel.t0));
+    setMark(me, sel.t1>=t0&&sel.t1<=t1, (sel.t1-t0)/T*100, fmtTC(sel.t1)+' ◀');
   });
 }
 function clearDiagSel(){ window._diagSel=null; paintDiagSel(); updateReviewBtn(); }
