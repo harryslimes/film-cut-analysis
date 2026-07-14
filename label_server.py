@@ -256,6 +256,7 @@ HOME_PAGE = r"""<!doctype html><html><head><meta charset=utf-8><title>Cut librar
  .diagref{stroke:#3d4a5c;stroke-width:1;stroke-dasharray:3 4}
  .diaggrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin-top:10px}
  .diagcell .celllab{font-size:10px;color:#7d8590;text-align:center;margin-top:2px}
+ .cthumb{height:52px;width:auto;border-radius:3px;background:#000;flex:none}
  .gbtn{font-size:12px;padding:5px 8px} .gbtn.on.gacc{background:#1f6f3f;border-color:#2c9;color:#eafff2}
  .gbtn.on.grej{background:#7a2d29;border-color:#c66;color:#ffe6e3}
  .overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:50;align-items:center;justify-content:center;padding:20px}
@@ -469,7 +470,9 @@ async function loadWeak(){
   sl.value=j.review.filter(r=>r.conf<0.5).length;   // default: everything below 0.5
   weakSlide();
 }
-function cutRow(x){ return `<div class=fixrow>
+function cutRow(x){ const v=encodeURIComponent(window._movie.video); return `<div class=fixrow>
+    <img class=cthumb loading=lazy src="/frameat?v=${v}&t=${(x.time-0.15).toFixed(3)}" title="frame before">
+    <img class=cthumb loading=lazy src="/frameat?v=${v}&t=${(x.time+0.15).toFixed(3)}" title="frame after">
     <div class=fn>${fmtTC(x.time)}</div>
     <div class=sub style="margin:0;flex:1"><span class="badge ${x.kind==='gradual'?'b-prog':'b-todo'}">${x.kind}</span> conf ${x.conf}</div>
     <button onclick="watchCut(${x.time})">▶ watch</button>
@@ -501,19 +504,26 @@ async function setGold(t, decision){
   const g = dec==='clear' ? null : dec;
   if(row) row.gold=g; if(cm) cm.gold=g;
   bumpNcuts((cur==='reject'?1:0)-(g==='reject'?1:0));   // rejects drop cuts from the end result
+  if(g==='reject' && row){        // the list shows only accepted cuts, so a reject leaves it
+    const idx=window._weak.indexOf(row);
+    if(idx>=0){ window._weak.splice(idx,1);
+      const sl=document.getElementById('weakn');
+      if(sl){ sl.max=window._weak.length; if(+sl.value>window._weak.length) sl.value=window._weak.length; } }
+  }
   weakSlide(); renderClusterList();
 }
-function watchCut(t){ openClip(t, 5, 8, '@'+fmtTC(t), 'subtitle shot index bumps at the cut'); }
-function openClip(t, pre, post, label, note){
+function watchCut(t){ openClip(t, 5, 8, '@'+fmtTC(t), 'the ◆ THIS CUT caption marks the cut you are reviewing', [t]); }
+function openClip(t, pre, post, label, note, marks){
   const m=window._movie;
   const q='v='+encodeURIComponent(m.video)+'&t='+t+'&pre='+pre.toFixed(2)+'&post='+post.toFixed(2);
+  const vq=q+((marks&&marks.length)?'&mark='+marks.map(x=>x.toFixed(3)).join(','):'');
   let ov=document.getElementById('player');
   if(!ov){ ov=document.createElement('div'); ov.id='player'; ov.className='overlay';
     ov.addEventListener('click',e=>{ if(e.target===ov) closePlayer(); }); document.body.appendChild(ov); }
   ov.innerHTML=`<div class=pbox onclick="event.stopPropagation()">
     <div class=prow><b>${label}</b><span class=muted>${note}</span><span class=sp></span><button onclick="closePlayer()">close ✕</button></div>
     <video controls autoplay muted playsinline style="width:100%;max-height:70vh;background:#000">
-      <source src="/clip?${q}" type="video/mp4"><track default kind=subtitles srclang=en src="/clipvtt?${q}"></video>
+      <source src="/clip?${q}" type="video/mp4"><track default kind=subtitles srclang=en src="/clipvtt?${vq}"></video>
     <div class=muted style="margin-top:6px">Transcoding a ~${Math.round(pre+post)}s clip (${pre.toFixed(1)}s before → ${post.toFixed(1)}s after). Muted autoplay — unmute in the controls.</div></div>`;
   ov.style.display='flex';
 }
@@ -583,7 +593,7 @@ async function goldCluster(i, decision){
 function watchCluster(i){
   const c=window._clusters[i], mid=(c.start+c.end)/2, pad=2.5;
   openClip(mid, Math.min(30, mid-c.start+pad), Math.min(60, c.end-mid+pad),
-    `${c.count}-cut burst · ${fmtTC(c.start)}–${fmtTC(c.end)}`, 'subtitle shot index bumps at every detected cut');
+    `${c.count}-cut burst · ${fmtTC(c.start)}–${fmtTC(c.end)}`, 'each ◆ THIS CUT marks a burst cut being judged', c.members.map(x=>x.time));
 }
 function closePlayer(){ const ov=document.getElementById('player'); if(ov){ ov.style.display='none'; ov.innerHTML=''; } }
 function reviewCut(t){
@@ -908,12 +918,20 @@ def _weak_cuts(video, ceiling=0.85):
     st = _gold_state(video)
     for r in rows:
         r["gold"] = st.get(round(r["time"], 3))
+    # only cuts still ACCEPTED are worth reviewing: those in the end result (base + fixes)
+    # minus gold rejects. A rejected cut is already handled, so it drops off the list.
+    base, src = _base_cuts(video)
+    accepted = set()
+    if src:
+        rej = {round(t, 3) for t in _load_gold(video)["reject"]}
+        accepted = {round(t, 3) for t in _end_result(base, _movie_fixes(video))
+                    if round(t, 3) not in rej}
     bands = {"lt04": sum(1 for r in rows if r["conf"] < 0.4),
              "b0406": sum(1 for r in rows if 0.4 <= r["conf"] < 0.6),
              "b0608": sum(1 for r in rows if 0.6 <= r["conf"] < 0.8),
              "gte08": sum(1 for r in rows if r["conf"] >= 0.8)}
-    return {"total": len(rows), "ceiling": ceiling, "bands": bands,
-            "review": [r for r in rows if r["conf"] < ceiling]}
+    review = [r for r in rows if r["conf"] < ceiling and round(r["time"], 3) in accepted]
+    return {"total": len(rows), "ceiling": ceiling, "bands": bands, "review": review}
 
 
 def _cut_clusters(video, conf_max=0.6, gap=1.5, min_size=3):
@@ -1007,18 +1025,22 @@ def _vtt_ts(s):
     return f"{h:02d}:{m:02d}:{s % 60:06.3f}"
 
 
-def _clip_vtt(video, t, pre, post):
+def _clip_vtt(video, t, pre, post, marks=None):
     """WebVTT for a preview clip [t-pre, t+post]: one cue per shot in the window, labelled
     with the running scene index, in clip-relative time -- so the caption bumps to the next
-    shot number exactly at each detected cut."""
+    shot number exactly at each detected cut. `marks` are the cut time(s) under review: the
+    shot that begins at a marked cut is flagged so you know which transition is the one you
+    are judging (vs. other cuts that merely fall inside the window)."""
     cuts = sorted(_base_cuts(video)[0])
     cs, ce = max(0.0, t - pre), t + post
+    mk = {round(x, 2) for x in (marks or [])}
     bounds = [cs] + [c for c in cuts if cs < c < ce] + [ce]
     out = ["WEBVTT", ""]
     for i in range(len(bounds) - 1):
         a, b = bounds[i], bounds[i + 1]
         shot = sum(1 for c in cuts if c <= (a + b) / 2) + 1
-        out += [f"{_vtt_ts(a - cs)} --> {_vtt_ts(b - cs)}", f"Shot {shot}", ""]
+        label = f"◆ THIS CUT → Shot {shot}" if round(a, 2) in mk else f"Shot {shot}"
+        out += [f"{_vtt_ts(a - cs)} --> {_vtt_ts(b - cs)}", label, ""]
     return "\n".join(out)
 
 
@@ -1243,6 +1265,19 @@ class H(BaseHTTPRequestHandler):
             except ValueError:
                 return self._json(400, {"error": "bad params"})
             return self._json(200, _cut_clusters(v, conf, gap, msz))
+        if p == "/frameat":
+            v = qs.get("v", [None])[0]
+            if not (v and os.path.isfile(v)):
+                return self._send(404, "text/plain", b"unknown movie")
+            try:
+                t = max(0.0, float(qs["t"][0]))
+            except (KeyError, ValueError):
+                return self._send(400, "text/plain", b"bad t")
+            frames = _decode_frames(v, t, 1, width=150)
+            if not frames:
+                return self._send(404, "text/plain", b"decode failed")
+            return self._send(200, "image/jpeg", base64.b64decode(frames[0]))
+
         if p == "/clipvtt":
             v = qs.get("v", [None])[0]
             if not (v and os.path.isfile(v)):
@@ -1251,7 +1286,13 @@ class H(BaseHTTPRequestHandler):
                 t = float(qs["t"][0]); pre = float(qs.get("pre", ["5"])[0]); post = float(qs.get("post", ["8"])[0])
             except (KeyError, ValueError):
                 return self._send(400, "text/plain", b"bad params")
-            return self._send(200, "text/vtt", _clip_vtt(v, t, pre, post).encode())
+            marks = []
+            for s in qs.get("mark", [""])[0].split(","):
+                try:
+                    marks.append(float(s))
+                except ValueError:
+                    pass
+            return self._send(200, "text/vtt", _clip_vtt(v, t, pre, post, marks).encode())
 
         if p == "/clip":
             v = qs.get("v", [None])[0]
