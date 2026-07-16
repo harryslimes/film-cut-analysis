@@ -66,12 +66,15 @@ def detect(video_path, method="cuda", threshold=0.4,
 
     if method == "cuda":
         pre = ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
-        # A2-1 goal: handle a 10-bit (p010) source too. The `scale_cuda=...:format=nv12`
-        # option only exists on newer ffmpeg builds -- older ones error "Option 'format'
-        # not found" and decode nothing. Instead download whichever surface format the GPU
-        # produced (nv12 for 8-bit, p010le for 10-bit) and let the final -pix_fmt rgb24 do
-        # the CPU conversion -- works across ffmpeg versions and both bit depths.
-        vf = "scale_cuda=48:27,hwdownload,format=nv12|p010le"
+        # hwdownload can only emit the hw surface's OWN sw_format: nv12 for an 8-bit
+        # source, p010le for a 10-bit one. A `format=nv12|p010le` alternation cannot fix
+        # 10-bit -- filter negotiation picks nv12 out of the candidate list regardless of
+        # the order written, hwdownload then rejects it ("Invalid output format nv12 for
+        # hwframe download") and the decode yields zero frames. So convert to 8-bit nv12
+        # ON the GPU, inside scale_cuda, BEFORE the download: the surface really is nv12
+        # by the time hwdownload sees it, and both bit depths work. The 10->8-bit
+        # reduction is immaterial at a 48x27 analysis thumbnail.
+        vf = "scale_cuda=48:27:format=nv12,hwdownload,format=nv12"
     else:
         pre = []
         vf = "scale=48:27"

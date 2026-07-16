@@ -27,7 +27,14 @@ def detect(video_path, threshold=0.4, analyse_h=180, method="cpu") -> DetectResu
 
     if method == "cuda":
         pre = ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
-        vf = (f"scale_cuda={aw}:{analyse_h},hwdownload,format=nv12,"
+        # hwdownload can only emit the hw surface's OWN sw_format: nv12 for an 8-bit
+        # source, p010le for a 10-bit one. Downloading a bare `format=nv12` therefore dies
+        # on a 10-bit source ("Invalid output format nv12 for hwframe download") and no
+        # frame ever reaches `select`; a `format=nv12|p010le` alternation does not help,
+        # since negotiation picks nv12 out of the list regardless of the order written. So
+        # convert to 8-bit nv12 ON the GPU, inside scale_cuda, BEFORE the download. The
+        # 10->8-bit reduction is immaterial at the analyse_h thumbnail this scores on.
+        vf = (f"scale_cuda={aw}:{analyse_h}:format=nv12,hwdownload,format=nv12,"
               f"select='gt(scene,{threshold})',showinfo")
     else:
         pre = []
